@@ -1,0 +1,1548 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/PetePeter/phone-agent-protocol/schema/2026-10-27/schema.json",
+  "title": "Phone Agent Protocol 2026-10-27",
+  "$defs": {
+    "ProtocolVersion": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+    },
+    "Implementation": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        },
+        "instanceId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "version"
+      ]
+    },
+    "Role": {
+      "enum": [
+        "controller",
+        "observer"
+      ]
+    },
+    "CallStateName": {
+      "enum": [
+        "ringing",
+        "dialing",
+        "alerting",
+        "active",
+        "held",
+        "ended"
+      ]
+    },
+    "EndReason": {
+      "enum": [
+        "local",
+        "remote",
+        "rejected",
+        "busy",
+        "failed",
+        "fallback",
+        "link_lost"
+      ]
+    },
+    "CallInfo": {
+      "type": "object",
+      "properties": {
+        "callId": {
+          "type": "string"
+        },
+        "number": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "direction": {
+          "enum": [
+            "inbound",
+            "outbound"
+          ]
+        },
+        "state": {
+          "$ref": "#/$defs/CallStateName"
+        }
+      },
+      "required": [
+        "callId",
+        "number",
+        "direction",
+        "state"
+      ]
+    },
+    "State": {
+      "type": "object",
+      "properties": {
+        "link": {
+          "enum": [
+            "up",
+            "down"
+          ]
+        },
+        "engine": {
+          "enum": [
+            "starting",
+            "ready",
+            "stopped",
+            "error"
+          ]
+        },
+        "calls": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CallInfo"
+          }
+        }
+      },
+      "required": [
+        "link",
+        "engine",
+        "calls"
+      ]
+    },
+    "ServerCapabilities": {
+      "type": "object",
+      "properties": {
+        "calls": {
+          "type": "object"
+        },
+        "conference": {
+          "type": "object"
+        },
+        "sms": {
+          "type": "object"
+        },
+        "contacts": {
+          "type": "object"
+        },
+        "heartbeat": {
+          "type": "object"
+        },
+        "voice": {
+          "type": "object",
+          "properties": {
+            "tts": {
+              "type": "boolean"
+            },
+            "stt": {
+              "type": "boolean"
+            }
+          }
+        }
+      }
+    },
+    "JSONRPCRequest": {
+      "type": "object",
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "type": [
+            "string",
+            "integer"
+          ]
+        },
+        "method": {
+          "type": "string"
+        },
+        "params": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "id",
+        "method"
+      ]
+    },
+    "JSONRPCResponse": {
+      "type": "object",
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "type": [
+            "string",
+            "integer"
+          ]
+        },
+        "result": {
+          "type": "object"
+        },
+        "error": {
+          "$ref": "#/$defs/Error"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "id"
+      ],
+      "oneOf": [
+        {
+          "required": [
+            "result"
+          ]
+        },
+        {
+          "required": [
+            "error"
+          ]
+        }
+      ]
+    },
+    "JSONRPCNotification": {
+      "type": "object",
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "method": {
+          "const": "event"
+        },
+        "params": {
+          "$ref": "#/$defs/Event"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "method",
+        "params"
+      ]
+    },
+    "Error": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "integer"
+        },
+        "message": {
+          "type": "string"
+        },
+        "data": {}
+      },
+      "required": [
+        "code",
+        "message"
+      ]
+    },
+    "ErrorCode": {
+      "enum": [
+        -32700,
+        -32600,
+        -32601,
+        -32602,
+        -32603,
+        -32001,
+        1001,
+        1002,
+        1003,
+        1004,
+        1005,
+        1006,
+        1007,
+        1008
+      ]
+    },
+    "MessageSummary": {
+      "type": "object",
+      "properties": {
+        "handle": {
+          "type": "string"
+        },
+        "number": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "preview": {
+          "type": "string",
+          "maxLength": 160
+        },
+        "ts": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "handle",
+        "number",
+        "preview",
+        "ts"
+      ]
+    },
+    "Contact": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "numbers": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "number": {
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "number"
+            ]
+          }
+        }
+      },
+      "required": [
+        "name",
+        "numbers"
+      ]
+    },
+    "TranscriptEntry": {
+      "type": "object",
+      "properties": {
+        "speaker": {
+          "enum": [
+            "remote",
+            "local"
+          ]
+        },
+        "text": {
+          "type": "string"
+        },
+        "startMs": {
+          "type": "integer"
+        },
+        "endMs": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "speaker",
+        "text",
+        "startMs",
+        "endMs"
+      ]
+    },
+    "HelloParams": {
+      "type": "object",
+      "properties": {
+        "protocolVersion": {
+          "$ref": "#/$defs/ProtocolVersion"
+        },
+        "token": {
+          "type": "string"
+        },
+        "role": {
+          "$ref": "#/$defs/Role"
+        },
+        "clientInfo": {
+          "$ref": "#/$defs/Implementation"
+        },
+        "resumeFrom": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "protocolVersion",
+        "token",
+        "role",
+        "clientInfo"
+      ]
+    },
+    "HelloResult": {
+      "type": "object",
+      "properties": {
+        "protocolVersion": {
+          "$ref": "#/$defs/ProtocolVersion"
+        },
+        "serverInfo": {
+          "$ref": "#/$defs/Implementation"
+        },
+        "capabilities": {
+          "$ref": "#/$defs/ServerCapabilities"
+        },
+        "role": {
+          "$ref": "#/$defs/Role"
+        },
+        "state": {
+          "$ref": "#/$defs/State"
+        },
+        "lastSeq": {
+          "type": "integer"
+        },
+        "gap": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "protocolVersion",
+        "serverInfo",
+        "capabilities",
+        "role",
+        "state",
+        "lastSeq",
+        "gap"
+      ]
+    },
+    "HelloRequest": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/JSONRPCRequest"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "method": {
+              "const": "hello"
+            },
+            "params": {
+              "$ref": "#/$defs/HelloParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ]
+        }
+      ]
+    },
+    "CallDialParams": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "number": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "number"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "contact": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "contact"
+          ]
+        }
+      ]
+    },
+    "CallDialResult": {
+      "type": "object",
+      "properties": {
+        "callId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "callId"
+      ]
+    },
+    "CallDialRequest": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/JSONRPCRequest"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "method": {
+              "const": "call.dial"
+            },
+            "params": {
+              "$ref": "#/$defs/CallDialParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ]
+        }
+      ]
+    },
+    "CallAnswerParams": {
+      "type": "object",
+      "properties": {
+        "callId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "callId"
+      ]
+    },
+    "CallAnswerResult": {
+      "type": "object",
+      "properties": {}
+    },
+    "CallAnswerRequest": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/JSONRPCRequest"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "method": {
+              "const": "call.answer"
+            },
+            "params": {
+              "$ref": "#/$defs/CallAnswerParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ]
+        }
+      ]
+    },
+    "CallRejectParams": {
+      "type": "object",
+      "properties": {
+        "callId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "callId"
+      ]
+    },
+    "CallRejectResult": {
+      "type": "object",
+      "properties": {}
+    },
+    "CallRejectRequest": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/JSONRPCRequest"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "method": {
+              "const": "call.reject"
+            },
+            "params": {
+              "$ref": "#/$defs/CallRejectParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ]
+        }
+      ]
+    },
+    "CallHangupParams": {
+      "type": "object",
+      "properties": {
+        "callId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "callId"
+      ]
+    },
+    "CallHangupResult": {
+      "type": "object",
+      "properties": {}
+    },
+    "CallHangupRequest": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/JSONRPCRequest"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "method": {
+              "const": "call.hangup"
+            },
+            "params": {
+              "$ref": "#/$defs/CallHangupParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ]
+        }
+      ]
+    },
+    "CallHoldParams": {
+      "type": "object",
+      "properties": {
+        "callId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "callId"
+      ]
+    },
+    "CallHoldResult": {
+      "type": "object",
+      "properties": {}
+    },
+    "CallHoldRequest": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/JSONRPCRequest"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "method": {
+              "const": "call.hold"
+            },
+            "params": {
+              "$ref": "#/$defs/CallHoldParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ]
+        }
+      ]
+    },
+    "CallResumeParams": {
+      "type": "object",
+      "properties": {
+        "callId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "callId"
+      ]
+    },
+    "CallResumeResult": {
+      "type": "object",
+      "properties": {}
+    },
+    "CallResumeRequest": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/JSONRPCRequest"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "method": {
+              "const": "call.resume"
+            },
+            "params": {
+              "$ref": "#/$defs/CallResumeParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ]
+        }
+      ]
+    },
+    "ConferenceJoinParams": {
+      "type": "object",
+      "properties": {
+        "callId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "callId"
+      ]
+    },
+    "ConferenceJoinResult": {
+      "type": "object",
+      "properties": {}
+    },
+    "ConferenceJoinRequest": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/JSONRPCRequest"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "method": {
+              "const": "conference.join"
+            },
+            "params": {
+              "$ref": "#/$defs/ConferenceJoinParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ]
+        }
+      ]
+    },
+    "CallSayParams": {
+      "type": "object",
+      "properties": {
+        "callId": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "callId",
+        "text"
+      ]
+    },
+    "CallSayResult": {
+      "type": "object",
+      "properties": {
+        "sayId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "sayId"
+      ]
+    },
+    "CallSayRequest": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/JSONRPCRequest"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "method": {
+              "const": "call.say"
+            },
+            "params": {
+              "$ref": "#/$defs/CallSayParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ]
+        }
+      ]
+    },
+    "ConferenceCreateParams": {
+      "allOf": [
+        {
+          "type": "object",
+          "properties": {
+            "callId": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "callId"
+          ]
+        },
+        {
+          "oneOf": [
+            {
+              "type": "object",
+              "properties": {
+                "number": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "number"
+              ]
+            },
+            {
+              "type": "object",
+              "properties": {
+                "contact": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "contact"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "ConferenceCreateResult": {
+      "type": "object",
+      "properties": {
+        "callId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "callId"
+      ]
+    },
+    "ConferenceCreateRequest": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/JSONRPCRequest"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "method": {
+              "const": "conference.create"
+            },
+            "params": {
+              "$ref": "#/$defs/ConferenceCreateParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ]
+        }
+      ]
+    },
+    "SmsSendParams": {
+      "type": "object",
+      "properties": {
+        "number": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "number",
+        "text"
+      ]
+    },
+    "SmsSendResult": {
+      "type": "object",
+      "properties": {
+        "handle": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "handle"
+      ]
+    },
+    "SmsSendRequest": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/JSONRPCRequest"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "method": {
+              "const": "sms.send"
+            },
+            "params": {
+              "$ref": "#/$defs/SmsSendParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ]
+        }
+      ]
+    },
+    "SmsListParams": {
+      "type": "object",
+      "properties": {
+        "limit": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "SmsListResult": {
+      "type": "object",
+      "properties": {
+        "messages": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/MessageSummary"
+          }
+        }
+      },
+      "required": [
+        "messages"
+      ]
+    },
+    "SmsListRequest": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/JSONRPCRequest"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "method": {
+              "const": "sms.list"
+            },
+            "params": {
+              "$ref": "#/$defs/SmsListParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ]
+        }
+      ]
+    },
+    "SmsReadParams": {
+      "type": "object",
+      "properties": {
+        "handle": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "handle"
+      ]
+    },
+    "SmsReadResult": {
+      "type": "object",
+      "properties": {
+        "number": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        },
+        "ts": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "number",
+        "text",
+        "ts"
+      ]
+    },
+    "SmsReadRequest": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/JSONRPCRequest"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "method": {
+              "const": "sms.read"
+            },
+            "params": {
+              "$ref": "#/$defs/SmsReadParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ]
+        }
+      ]
+    },
+    "ContactsSearchParams": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "query"
+      ]
+    },
+    "ContactsSearchResult": {
+      "type": "object",
+      "properties": {
+        "matches": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Contact"
+          }
+        }
+      },
+      "required": [
+        "matches"
+      ]
+    },
+    "ContactsSearchRequest": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/JSONRPCRequest"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "method": {
+              "const": "contacts.search"
+            },
+            "params": {
+              "$ref": "#/$defs/ContactsSearchParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ]
+        }
+      ]
+    },
+    "TranscriptGetParams": {
+      "type": "object",
+      "properties": {
+        "callId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "callId"
+      ]
+    },
+    "TranscriptGetResult": {
+      "type": "object",
+      "properties": {
+        "callId": {
+          "type": "string"
+        },
+        "utterances": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/TranscriptEntry"
+          }
+        }
+      },
+      "required": [
+        "callId",
+        "utterances"
+      ]
+    },
+    "TranscriptGetRequest": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/JSONRPCRequest"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "method": {
+              "const": "transcript.get"
+            },
+            "params": {
+              "$ref": "#/$defs/TranscriptGetParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ]
+        }
+      ]
+    },
+    "StatusParams": {
+      "type": "object",
+      "properties": {}
+    },
+    "StatusResult": {
+      "type": "object",
+      "properties": {
+        "state": {
+          "$ref": "#/$defs/State"
+        }
+      },
+      "required": [
+        "state"
+      ]
+    },
+    "StatusRequest": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/JSONRPCRequest"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "method": {
+              "const": "status"
+            },
+            "params": {
+              "$ref": "#/$defs/StatusParams"
+            }
+          },
+          "required": [
+            "method"
+          ]
+        }
+      ]
+    },
+    "EngineStartParams": {
+      "type": "object",
+      "properties": {}
+    },
+    "EngineStartResult": {
+      "type": "object",
+      "properties": {
+        "state": {
+          "$ref": "#/$defs/State"
+        }
+      },
+      "required": [
+        "state"
+      ]
+    },
+    "EngineStartRequest": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/JSONRPCRequest"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "method": {
+              "const": "engine.start"
+            },
+            "params": {
+              "$ref": "#/$defs/EngineStartParams"
+            }
+          },
+          "required": [
+            "method"
+          ]
+        }
+      ]
+    },
+    "EngineStopParams": {
+      "type": "object",
+      "properties": {}
+    },
+    "EngineStopResult": {
+      "type": "object",
+      "properties": {
+        "state": {
+          "$ref": "#/$defs/State"
+        }
+      },
+      "required": [
+        "state"
+      ]
+    },
+    "EngineStopRequest": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/JSONRPCRequest"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "method": {
+              "const": "engine.stop"
+            },
+            "params": {
+              "$ref": "#/$defs/EngineStopParams"
+            }
+          },
+          "required": [
+            "method"
+          ]
+        }
+      ]
+    },
+    "ClientRequest": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/HelloRequest"
+        },
+        {
+          "$ref": "#/$defs/CallDialRequest"
+        },
+        {
+          "$ref": "#/$defs/CallAnswerRequest"
+        },
+        {
+          "$ref": "#/$defs/CallRejectRequest"
+        },
+        {
+          "$ref": "#/$defs/CallHangupRequest"
+        },
+        {
+          "$ref": "#/$defs/CallHoldRequest"
+        },
+        {
+          "$ref": "#/$defs/CallResumeRequest"
+        },
+        {
+          "$ref": "#/$defs/ConferenceJoinRequest"
+        },
+        {
+          "$ref": "#/$defs/CallSayRequest"
+        },
+        {
+          "$ref": "#/$defs/ConferenceCreateRequest"
+        },
+        {
+          "$ref": "#/$defs/SmsSendRequest"
+        },
+        {
+          "$ref": "#/$defs/SmsListRequest"
+        },
+        {
+          "$ref": "#/$defs/SmsReadRequest"
+        },
+        {
+          "$ref": "#/$defs/ContactsSearchRequest"
+        },
+        {
+          "$ref": "#/$defs/TranscriptGetRequest"
+        },
+        {
+          "$ref": "#/$defs/StatusRequest"
+        },
+        {
+          "$ref": "#/$defs/EngineStartRequest"
+        },
+        {
+          "$ref": "#/$defs/EngineStopRequest"
+        }
+      ]
+    },
+    "StateChangingMethod": {
+      "enum": [
+        "call.dial",
+        "call.answer",
+        "call.reject",
+        "call.hangup",
+        "call.hold",
+        "call.resume",
+        "call.say",
+        "conference.create",
+        "conference.join",
+        "sms.send",
+        "engine.start",
+        "engine.stop"
+      ]
+    },
+    "LinkEvent": {
+      "type": "object",
+      "properties": {
+        "seq": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "ts": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "type": {
+          "const": "link"
+        },
+        "status": {
+          "enum": [
+            "up",
+            "down"
+          ]
+        },
+        "phone": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "seq",
+        "ts",
+        "type",
+        "status"
+      ]
+    },
+    "EngineEvent": {
+      "type": "object",
+      "properties": {
+        "seq": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "ts": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "type": {
+          "const": "engine"
+        },
+        "status": {
+          "enum": [
+            "starting",
+            "ready",
+            "stopped",
+            "error"
+          ]
+        },
+        "detail": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "seq",
+        "ts",
+        "type",
+        "status"
+      ]
+    },
+    "CallRingingEvent": {
+      "type": "object",
+      "properties": {
+        "seq": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "ts": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "type": {
+          "const": "call.ringing"
+        },
+        "callId": {
+          "type": "string"
+        },
+        "number": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "allowed": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "seq",
+        "ts",
+        "type",
+        "callId",
+        "number",
+        "allowed"
+      ]
+    },
+    "CallStateEvent": {
+      "type": "object",
+      "properties": {
+        "seq": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "ts": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "type": {
+          "const": "call.state"
+        },
+        "callId": {
+          "type": "string"
+        },
+        "state": {
+          "$ref": "#/$defs/CallStateName"
+        },
+        "reason": {
+          "$ref": "#/$defs/EndReason"
+        },
+        "conference": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "seq",
+        "ts",
+        "type",
+        "callId",
+        "state"
+      ]
+    },
+    "CallUtteranceEvent": {
+      "type": "object",
+      "properties": {
+        "seq": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "ts": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "type": {
+          "const": "call.utterance"
+        },
+        "callId": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        },
+        "startMs": {
+          "type": "integer"
+        },
+        "endMs": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "seq",
+        "ts",
+        "type",
+        "callId",
+        "text",
+        "startMs",
+        "endMs"
+      ]
+    },
+    "CallSpokenEvent": {
+      "type": "object",
+      "properties": {
+        "seq": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "ts": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "type": {
+          "const": "call.spoken"
+        },
+        "callId": {
+          "type": "string"
+        },
+        "sayId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "seq",
+        "ts",
+        "type",
+        "callId",
+        "sayId"
+      ]
+    },
+    "SmsReceivedEvent": {
+      "type": "object",
+      "properties": {
+        "seq": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "ts": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "type": {
+          "const": "sms.received"
+        },
+        "handle": {
+          "type": "string"
+        },
+        "number": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "preview": {
+          "type": "string",
+          "maxLength": 160
+        }
+      },
+      "required": [
+        "seq",
+        "ts",
+        "type",
+        "handle",
+        "number",
+        "preview"
+      ]
+    },
+    "HeartbeatEvent": {
+      "type": "object",
+      "properties": {
+        "seq": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "ts": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "type": {
+          "const": "heartbeat"
+        }
+      },
+      "required": [
+        "seq",
+        "ts",
+        "type"
+      ]
+    },
+    "Event": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/LinkEvent"
+        },
+        {
+          "$ref": "#/$defs/EngineEvent"
+        },
+        {
+          "$ref": "#/$defs/CallRingingEvent"
+        },
+        {
+          "$ref": "#/$defs/CallStateEvent"
+        },
+        {
+          "$ref": "#/$defs/CallUtteranceEvent"
+        },
+        {
+          "$ref": "#/$defs/CallSpokenEvent"
+        },
+        {
+          "$ref": "#/$defs/SmsReceivedEvent"
+        },
+        {
+          "$ref": "#/$defs/HeartbeatEvent"
+        }
+      ]
+    }
+  }
+}

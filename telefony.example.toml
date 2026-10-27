@@ -1,0 +1,21 @@
+# telefony-app configuration. Read once at startup; neither PhAP nor MCP can change it.
+
+[device]
+transport = "usb:10D7:B012+sco=2"   # Bumble transport for the libusbK-bound dongle
+
+[policy]
+allowlist = ["+61491570156"]        # the only numbers that may be called, texted or conferenced
+country_code = "+61"                # how national numbers (04..) are matched against the allowlist
+fallback_policy = "ring"            # unanswered ringing: ring (leave it to the phone) | reject
+ring_timeout_s = 15
+
+[phap]
+bind = "127.0.0.1:7781"             # loopback only in v0.1
+token = "change-me"
+heartbeat_s = 10
+event_buffer = 1000
+
+[voice]
+tts = "auto"                        # auto | piper | sapi | none
+# piper_model = "models/en_GB-alan-medium.onnx"   # needs the `piper` executable on PATH
+stt_model = "small.en"              # faster-whisper model; install with: pip install telefony-app[stt]
