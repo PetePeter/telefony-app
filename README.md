@@ -1,6 +1,6 @@
 # telefony-app
 
-The reference **[PhAP](https://github.com/PetePeter/phone-agent-protocol) server**. A PC pretends to be a Bluetooth hands-free unit (a car kit), so AI agents can use a real Android phone or iPhone. They can:
+The sample **[PhAP](https://github.com/PetePeter/phone-agent-protocol) implementation**: a PhAP server, plus an example LLM host that uses it. A PC pretends to be a Bluetooth hands-free unit (a car kit), so AI agents can use a real Android phone or iPhone. They can:
 
 - place and answer calls, and talk on them
 - run conference calls
@@ -16,6 +16,7 @@ flowchart LR
         S --> M[MCP projection<br/>stdio]
         V[TTS: piper / SAPI / none<br/>STT: faster-whisper] --- BT
     end
+    P <--> A["examples/call_agent<br/>(LLM phone assistant)"]
     P <--> H[Helm / any agent host]
     M <--> C[plain LLM CLI]
 ```
@@ -37,29 +38,25 @@ flowchart LR
 | `voice.py` | TTS backends, chosen by `voice.tts`: Piper as a separate process, or Windows SAPI, or none (`call.say` then returns `1006 unsupported`). Also faster-whisper STT. |
 | `config.py` | TOML config, read once at startup. Neither protocol can change it. |
 
+## Example LLM host: call_agent
+
+[`examples/call_agent`](examples/call_agent/README.md) is a PhAP client that answers allowlisted callers with an LLM (any OpenAI-compatible API). It can tell the time and weather, conference someone in, text someone and hold the call. The LLM only names people from the agent's own phonebook and never sees a phone number. It rejects private numbers, and only the caller (or the caller's request) ends a call.
+
 ## Setup
+
+**[SETUP.md](SETUP.md)** walks through everything step by step, written so an AI agent can run it: the venv, the dongle and its Zadig/libusbK driver, the config, pairing the phone, Piper, and the call agent. Short version:
 
 ```sh
 python -m venv .venv
 .venv/Scripts/pip install -e ".[stt,dev]"
-cp telefony.example.toml telefony.toml   # set the token, the allowlist and the dongle
-```
-
-**Dongle:** use a dedicated USB Bluetooth adapter bound to **libusbK** with [Zadig](https://zadig.akeo.ie/). Windows stops using that adapter. See the telefony-cube notes for why the Windows stack can't be used: it gives apps no access to SCO call audio.
-
-**Voice:** with no extra setup, `tts = "auto"` uses the built-in Windows voice. For Piper, install the `piper` executable yourself and set `voice.piper_model`. Piper is GPL-3.0, so telefony-app only ever runs it as a separate program.
-
-## Run
-
-The app serves **one or the other**: PhAP by default, or MCP on stdio with `--mcp` (no PhAP server then).
-
-```sh
-.venv/Scripts/telefony-app telefony.toml          # PhAP server only
-.venv/Scripts/telefony-app telefony.toml --mcp    # MCP on stdio instead (an LLM CLI launches this)
+cp telefony.example.toml telefony.toml            # dongle, token, allowlist
+.venv/Scripts/telefony-app telefony.toml          # PhAP server (or add --mcp for MCP on stdio instead)
+.venv/Scripts/python -m examples.call_agent init  # then edit %APPDATA%/telefony-call-agent/*
+.venv/Scripts/python -m examples.call_agent       # the LLM host
 .venv/Scripts/pytest                              # tests, no hardware needed
 ```
 
-Example MCP client entry:
+The app serves **one or the other**: PhAP by default, or MCP on stdio with `--mcp`. Example MCP client entry:
 
 ```json
 {"mcpServers": {"telefony": {"command": "X:/coding/telefony-app/.venv/Scripts/telefony-app.exe",
@@ -75,7 +72,7 @@ The tests drive the real `PhoneService` and PhAP server over a real WebSocket, w
 - One phone, one conference.
 - No barge-in. While the app is speaking, the caller's speech is not transcribed.
 - If the Bluetooth link drops, the app reports `link: down`. Restart it to reconnect.
-- The real-phone wiring (`bt/bluetooth_phone.py`, `main.py`) still needs manual testing with hardware.
+- Tested on an iPhone: outgoing and incoming calls, speech both ways, the call agent. Conference and SMS through the agent are covered by tests, not yet live.
 
 ## License
 

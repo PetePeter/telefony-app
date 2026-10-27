@@ -34,6 +34,8 @@ The LLM is any OpenAI-compatible chat API: OpenRouter, or a local llama-server. 
 
 ## Run
 
+Full walkthrough: [SETUP.md](../../SETUP.md), step 8.
+
 ```sh
 .venv/Scripts/python -m examples.call_agent init                 # creates %APPDATA%/telefony-call-agent (or ~/.config/...)
 #   edit call_agent.toml there (PhAP token, LLM) and phonebook.csv (name,number per line)
