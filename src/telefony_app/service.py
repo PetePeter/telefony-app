@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import itertools
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -15,6 +16,7 @@ from telefony_app.phone import LinkDown, Phone, PhoneError
 log = logging.getLogger(__name__)
 
 PREVIEW_LENGTH = 160
+DTMF_DIGITS = re.compile(r"[0-9*#,]{1,32}")
 
 # PhAP error codes (spec/2026-10-27/errors.md)
 INVALID_PARAMS = -32602
@@ -146,6 +148,12 @@ class PhoneService:
             self.events.emit("call.spoken", callId=call.call_id, sayId=say_id)
             return None
 
+    async def send_dtmf(self, call_id: str, digits: str) -> None:
+        if not isinstance(digits, str) or not DTMF_DIGITS.fullmatch(digits):
+            raise PhapError(INVALID_PARAMS, "invalid params", {"detail": "digits must be 1-32 of 0-9 * # ,"})
+        self._call(call_id, "active")
+        await self._phone(self.phone.send_dtmf(digits))
+
     async def conference_create(self, call_id: str, number: str | None = None, contact: str | None = None) -> str:
         number = await self._reachable(number, contact)
         first = self._call(call_id, "active")
@@ -240,6 +248,11 @@ class PhoneService:
             return
         call.transcript.append({"speaker": "remote", "text": text, "startMs": start_ms, "endMs": end_ms})
         self.events.emit("call.utterance", callId=call.call_id, text=text, startMs=start_ms, endMs=end_ms)
+
+    def dtmf(self, digit: str) -> None:
+        call = self._current
+        if call is not None and call.state == "active":
+            self.events.emit("call.dtmf", callId=call.call_id, digit=digit)
 
     def sms_received(self, handle: str, number: str, text: str) -> None:
         self.events.emit("sms.received", **_summary(handle, number, None, text))

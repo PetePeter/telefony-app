@@ -12,6 +12,7 @@ from bumble.device import Connection, Device, ScoLink
 
 from telefony_app.bt.audio import STT_RATE, AudioPump, resample
 from telefony_app.bt.call_state import CallEnded, CallOutcome, CallState, CallTracker
+from telefony_app.bt.dtmf import DtmfDecoder
 from telefony_app.bt.segmenter import Segmenter
 
 _AUDIO_GRACE_SECONDS = 5.0  # time allowed for the phone to open the SCO link
@@ -51,8 +52,8 @@ class HfLine:
     def __init__(self, protocol: hfp.HfProtocol) -> None:
         self.protocol = protocol
         self.tracker = CallTracker()
-        self.pump = AudioPump()
         self.rate = 8000
+        self.pump = AudioPump(DtmfDecoder(self.rate))
         self._changed = asyncio.Event()
         self._audio = asyncio.Event()
         self._task: asyncio.Task | None = None
@@ -134,6 +135,14 @@ class HfLine:
             # Some phones end the call (+CIEV call=0) but never OK the AT+CHUP.
             if self.tracker.state is not CallState.ENDED:
                 raise
+
+    async def send_dtmf(self, digits: str, pause_s: float = 0.5) -> None:
+        """Press keys on the call, one AT+VTS each; ',' waits pause_s."""
+        for digit in digits:
+            if digit == ",":
+                await asyncio.sleep(pause_s)
+            else:
+                await self._unless_link_lost(self.protocol.execute_command(f"AT+VTS={digit}"))
 
     async def consult(self, number: str, answer_timeout: float) -> None:
         """Hold the current call, dial number and, once answered, merge everyone into one conference."""

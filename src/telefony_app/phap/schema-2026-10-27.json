@@ -753,6 +753,48 @@
         }
       ]
     },
+    "CallSendDtmfParams": {
+      "type": "object",
+      "properties": {
+        "callId": {
+          "type": "string"
+        },
+        "digits": {
+          "type": "string",
+          "pattern": "^[0-9*#,]{1,32}$"
+        }
+      },
+      "required": [
+        "callId",
+        "digits"
+      ]
+    },
+    "CallSendDtmfResult": {
+      "type": "object",
+      "properties": {}
+    },
+    "CallSendDtmfRequest": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/JSONRPCRequest"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "method": {
+              "const": "call.sendDtmf"
+            },
+            "params": {
+              "$ref": "#/$defs/CallSendDtmfParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ]
+        }
+      ]
+    },
     "ConferenceCreateParams": {
       "allOf": [
         {
@@ -1213,6 +1255,9 @@
           "$ref": "#/$defs/CallSayRequest"
         },
         {
+          "$ref": "#/$defs/CallSendDtmfRequest"
+        },
+        {
           "$ref": "#/$defs/ConferenceCreateRequest"
         },
         {
@@ -1250,6 +1295,7 @@
         "call.hold",
         "call.resume",
         "call.say",
+        "call.sendDtmf",
         "conference.create",
         "conference.join",
         "sms.send",
@@ -1458,6 +1504,36 @@
         "sayId"
       ]
     },
+    "CallDtmfEvent": {
+      "type": "object",
+      "properties": {
+        "seq": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "ts": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "type": {
+          "const": "call.dtmf"
+        },
+        "callId": {
+          "type": "string"
+        },
+        "digit": {
+          "type": "string",
+          "pattern": "^[0-9*#]$"
+        }
+      },
+      "required": [
+        "seq",
+        "ts",
+        "type",
+        "callId",
+        "digit"
+      ]
+    },
     "SmsReceivedEvent": {
       "type": "object",
       "properties": {
@@ -1535,6 +1611,9 @@
         },
         {
           "$ref": "#/$defs/CallSpokenEvent"
+        },
+        {
+          "$ref": "#/$defs/CallDtmfEvent"
         },
         {
           "$ref": "#/$defs/SmsReceivedEvent"

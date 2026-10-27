@@ -7,6 +7,8 @@ import numpy as np
 from bumble.hci import HCI_SynchronousDataPacket
 from scipy.signal import butter, resample_poly, sosfilt
 
+from telefony_app.bt.dtmf import DtmfDecoder
+
 _PEAK = 16384  # -6 dBFS: CVSD's slope overload distorts near full scale
 
 
@@ -32,9 +34,11 @@ def shape_for_phone(pcm: np.ndarray, rate: int) -> np.ndarray:
 class AudioPump:
     """SCO is paced by the controller: for every packet received, send the same number of samples back."""
 
-    def __init__(self) -> None:
+    def __init__(self, dtmf: DtmfDecoder | None = None) -> None:
         self._uplink = np.zeros(0, dtype=np.int16)
         self._downlink: list[np.ndarray] = []
+        self._dtmf = dtmf  # takes key presses out of the downlink
+        self.on_dtmf: Callable[[str], None] | None = None
         self.tap: Callable[[np.ndarray], None] | None = None  # sees all downlink audio, e.g. a transcript
 
     @property
@@ -49,6 +53,11 @@ class AudioPump:
         # Flagged packets still carry mostly-right audio; only NO_DATA is garbage.
         no_data = status == HCI_SynchronousDataPacket.Status.NO_DATA
         heard = np.zeros_like(received) if no_data else received.copy()
+        if self._dtmf:
+            digits, heard = self._dtmf.feed(heard)
+            for digit in digits:
+                if self.on_dtmf:
+                    self.on_dtmf(digit)
         self._downlink.append(heard)
         if self.tap:
             self.tap(heard)

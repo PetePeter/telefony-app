@@ -26,7 +26,7 @@ async def test_listen_returns_speech_buffered_while_saying(mcp: McpProjection, p
     phone.caller_says("it is like this")
     phone.speak_gate.set()
     assert await say == "spoken"
-    assert await mcp.listen(timeout_s=1) == {"heard": ["well", "it is like this"], "callEnded": False}
+    assert await mcp.listen(timeout_s=1) == {"heard": ["well", "it is like this"], "keys": "", "callEnded": False}
 
 
 async def test_say_blocks_until_spoken(mcp: McpProjection, phone: FakePhone):
@@ -47,13 +47,13 @@ async def test_listen_returns_when_the_call_ends(mcp: McpProjection, phone: Fake
     listen = asyncio.create_task(mcp.listen(timeout_s=5))
     await asyncio.sleep(0.05)
     phone.remote_hangs_up()
-    assert await asyncio.wait_for(listen, 1) == {"heard": [], "callEnded": True}
+    assert await asyncio.wait_for(listen, 1) == {"heard": [], "keys": "", "callEnded": True}
 
 
 async def test_listen_times_out_with_nothing_heard(mcp: McpProjection, phone: FakePhone):
     await mcp.dial(ALLOWED)
     phone.remote_answers()
-    assert await mcp.listen(timeout_s=0.1) == {"heard": [], "callEnded": False}
+    assert await mcp.listen(timeout_s=0.1) == {"heard": [], "keys": "", "callEnded": False}
 
 
 async def test_listen_without_a_call_is_an_error(mcp: McpProjection):
@@ -80,5 +80,15 @@ async def test_listen_after_the_call_ended_returns_at_once(mcp: McpProjection, p
     await mcp.dial(ALLOWED)
     phone.remote_answers()
     phone.remote_hangs_up()
-    assert await mcp.listen(timeout_s=5) == {"heard": [], "callEnded": True}
-    assert await asyncio.wait_for(mcp.listen(timeout_s=5), 0.5) == {"heard": [], "callEnded": True}
+    assert await mcp.listen(timeout_s=5) == {"heard": [], "keys": "", "callEnded": True}
+    assert await asyncio.wait_for(mcp.listen(timeout_s=5), 0.5) == {"heard": [], "keys": "", "callEnded": True}
+
+
+async def test_press_sends_keys_and_listen_reports_keys_pressed(mcp: McpProjection, phone: FakePhone):
+    await mcp.dial(ALLOWED)
+    phone.remote_answers()
+    assert await mcp.press("2#") == "sent"
+    assert phone.commands[-1] == ("send_dtmf", "2#")
+    phone.caller_presses("1")
+    phone.caller_presses("9")
+    assert await mcp.listen(timeout_s=1) == {"heard": [], "keys": "19", "callEnded": False}

@@ -56,6 +56,10 @@ class FakePhone(Phone):
         self._fail("speak")
         self.spoken.append(text)
 
+    async def send_dtmf(self, digits: str) -> None:
+        self.commands.append(("send_dtmf", digits))
+        self._fail("send_dtmf")
+
     async def sms_send(self, number: str, text: str) -> str:
         self.commands.append(("sms_send", number, text))
         return f"h{len(self.commands)}"
@@ -90,3 +94,7 @@ class FakePhone(Phone):
     def caller_says(self, text: str) -> None:
         assert self.events
         self.events.utterance(text, 0, 1000)
+
+    def caller_presses(self, digit: str) -> None:
+        assert self.events
+        self.events.dtmf(digit)

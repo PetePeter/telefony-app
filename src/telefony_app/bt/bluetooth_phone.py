@@ -32,6 +32,7 @@ class BluetoothPhone(Phone):
         self._tasks: dict[str, asyncio.Task] = {}
         self._contacts: list[Contact] | None = None
         line.on_note = self._on_note
+        line.pump.on_dtmf = self._on_dtmf
         self._connection.on(Connection.EVENT_DISCONNECTION, self._on_disconnect)
 
     @property
@@ -81,6 +82,9 @@ class BluetoothPhone(Phone):
         except (OSError, RuntimeError, CallEnded, wave.Error) as failed:
             raise PhoneError(str(failed) or type(failed).__name__) from None
 
+    async def send_dtmf(self, digits: str) -> None:
+        await self._at(self.line.send_dtmf(digits))
+
     # --- SMS and contacts (OBEX on the HFP RFCOMM session; iOS refuses a second one) ---
 
     async def sms_send(self, number: str, text: str) -> str:
@@ -128,6 +132,10 @@ class BluetoothPhone(Phone):
                 reason = "local" if self._hung_up else "remote"
             self.events.call_state("ended", reason)
             self._watch_incoming()
+
+    def _on_dtmf(self, digit: str) -> None:
+        if self.events:
+            self.events.dtmf(digit)
 
     def _on_disconnect(self, reason: int) -> None:
         self.link_up = False

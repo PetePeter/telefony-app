@@ -319,3 +319,19 @@ async def test_line_still_starts_when_phone_refuses_to_turn_off_echo_cancelling(
     )
     ag, line = await connect(ec_nr)  # Bumble's AG answers AT+NREC with ERROR
     line.stop()
+
+
+async def test_send_dtmf_sends_one_vts_per_digit_and_pauses_on_comma(phone_and_line):
+    ag, line = phone_and_line
+    sent: list[str] = []
+
+    def on_vts(digit) -> None:
+        sent.append(digit.decode() if isinstance(digit, bytes) else digit)
+        ag.send_ok()
+
+    ag._on_vts = on_vts
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+    await asyncio.wait_for(line.send_dtmf("1,2#*", pause_s=0.2), 3)
+    assert sent == ["1", "2", "#", "*"]
+    assert loop.time() - started >= 0.2

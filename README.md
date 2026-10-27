@@ -5,6 +5,7 @@
 The sample **[PhAP](https://github.com/PetePeter/phone-agent-protocol) implementation**: a PhAP server, plus an example LLM host that uses it. A PC pretends to be a Bluetooth hands-free unit (a car kit), so AI agents can use a real Android phone or iPhone. They can:
 
 - place and answer calls, and talk on them
+- press keys on menus, and hear the keys a caller presses (DTMF)
 - run conference calls
 - send and read SMS
 - search contacts
@@ -26,7 +27,7 @@ flowchart LR
 | Interface | For | Scope |
 |---|---|---|
 | **PhAP 2026-10-27** on `ws://127.0.0.1:7781/phap` | agent hosts (Helm) | Full: inbound calls and SMS as pushed events, live calls, conference, resume |
-| **MCP** on stdio (`--mcp`, instead of PhAP) | Claude Code, Codex, Copilot... | Outbound only: `dial`, `say`, `listen`, `hangup`, SMS, contacts, status |
+| **MCP** on stdio (`--mcp`, instead of PhAP) | Claude Code, Codex, Copilot... | Outbound only: `dial`, `say`, `press`, `listen`, `hangup`, SMS, contacts, status |
 
 ## Layers
 
@@ -34,9 +35,9 @@ flowchart LR
 |---|---|
 | `service.py` | `PhoneService`: the single source of truth for calls, allowlist enforcement, the fallback policy, transcripts and the event log. Both protocols are thin views of it; a run serves one or the other, never both. |
 | `phap/server.py` | PhAP: hello/welcome, roles, schema-shaped results and errors, idempotent methods, resume, heartbeat. |
-| `mcp_projection.py` | MCP tools. `listen` blocks for the caller's next words, buffered while `say` plays. |
+| `mcp_projection.py` | MCP tools. `listen` blocks for the caller's next words or key presses, buffered while `say` plays. |
 | `phone.py` | The `Phone` port, so the service never sees Bluetooth. |
-| `bt/` | The Bluetooth implementation of that port (HfLine, OBEX/PBAP/MAP), from the telefony-cube proof of concept. |
+| `bt/` | The Bluetooth implementation of that port (HfLine, a DTMF decoder, OBEX/PBAP/MAP), from the telefony-cube proof of concept. |
 | `voice.py` | TTS backends, chosen by `voice.tts`: Piper as a separate process, or Windows SAPI, or none (`call.say` then returns `1006 unsupported`). Also faster-whisper STT. |
 | `config.py` | TOML config, read once at startup. Neither protocol can change it. |
 

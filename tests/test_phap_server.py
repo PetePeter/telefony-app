@@ -169,6 +169,43 @@ async def test_say_without_tts_is_unsupported(connect_with):
     assert (await client.request("call.say", {"callId": call_id, "text": "hi"}))["error"]["code"] == 1006
 
 
+async def test_send_dtmf_presses_the_keys(connect, phone: FakePhone):
+    client = await connect()
+    await client.hello()
+    call_id = (await client.request("call.dial", {"number": ALLOWED}))["result"]["callId"]
+    phone.remote_answers()
+    assert (await client.request("call.sendDtmf", {"callId": call_id, "digits": "1,2#*"}))["result"] == {}
+    assert phone.commands[-1] == ("send_dtmf", "1,2#*")
+
+
+@pytest.mark.parametrize("digits", ["", "12A", "1;ATD", "1" * 33])
+async def test_send_dtmf_rejects_bad_digits(connect, phone: FakePhone, digits: str):
+    client = await connect()
+    await client.hello()
+    call_id = (await client.request("call.dial", {"number": ALLOWED}))["result"]["callId"]
+    phone.remote_answers()
+    assert (await client.request("call.sendDtmf", {"callId": call_id, "digits": digits}))["error"]["code"] == -32602
+    assert not any(c[0] == "send_dtmf" for c in phone.commands)
+
+
+async def test_send_dtmf_needs_an_active_call(connect, phone: FakePhone):
+    client = await connect()
+    await client.hello()
+    call_id = (await client.request("call.dial", {"number": ALLOWED}))["result"]["callId"]
+    assert (await client.request("call.sendDtmf", {"callId": call_id, "digits": "1"}))["error"]["code"] == -32602
+    assert (await client.request("call.sendDtmf", {"callId": "nope", "digits": "1"}))["error"]["code"] == 1003
+
+
+async def test_far_end_key_presses_are_dtmf_events(connect, phone: FakePhone):
+    client = await connect()
+    await client.hello()
+    call_id = (await client.request("call.dial", {"number": ALLOWED}))["result"]["callId"]
+    phone.remote_answers()
+    phone.caller_presses("4")
+    phone.caller_presses("#")
+    assert [(await client.event("call.dtmf"))["digit"] for _ in range(2)] == ["4", "#"]
+
+
 # --- unattended ringing ---
 
 

@@ -44,6 +44,7 @@ METHODS: dict[str, tuple[bool, Handler]] = {
     "call.hold": _method(True, lambda s, p: s.hold(p["callId"])),
     "call.resume": _method(True, lambda s, p: s.resume(p["callId"])),
     "call.say": _method(True, lambda s, p: s.say(p["callId"], p["text"])),
+    "call.sendDtmf": _method(True, lambda s, p: s.send_dtmf(p["callId"], p["digits"])),
     "conference.create": _method(True, lambda s, p: s.conference_create(p["callId"], p.get("number"), p.get("contact"))),
     "conference.join": _method(True, lambda s, p: s.conference_join(p["callId"])),
     "sms.send": _method(True, lambda s, p: s.sms_send(p["number"], p["text"])),
