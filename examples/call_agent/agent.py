@@ -6,11 +6,13 @@ anything else. The LLM is any OpenAI-compatible chat API: OpenRouter, or a local
 
 import asyncio
 import contextlib
+import csv
 import json
 import logging
 import urllib.request
 from collections.abc import AsyncIterator, Awaitable, Callable
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Protocol
 
 import websockets
@@ -21,45 +23,62 @@ log = logging.getLogger("call_agent")
 PROTOCOL_VERSION = "2026-10-27"
 SYSTEM_PROMPT = (
     "You are a friendly phone assistant on a live voice call. Reply in one or two short spoken sentences, "
-    "no lists or symbols. Use your tools for the time, the weather, texts, contacts and calls; "
-    "only text or call people the caller asks for. "
+    "no lists or symbols. You can tell the time and the weather, and call or text people by name; "
+    "only text or call people the caller asks for. You never know or say phone numbers. "
     "Keep the conversation going until the caller hangs up. Use hang_up only when the caller asks you to end the call."
 )
-GREETING = "Hello, this is the telefony demo assistant. I can tell you the time and weather, read and send texts, or call someone in."
+GREETING = "Hello, this is the telefony demo assistant. I can tell you the time and weather, send a text, or call someone in."
 SORRY = "Sorry, I couldn't manage that. Could you say it another way?"
+UNREACHABLE = "I can't reach that person."
+FAILED = "That didn't work."
 MAX_TOOL_ROUNDS = 4
 
-# Phone tools: name -> (PhAP method, description, parameters, required). "callId" is filled in with the current call.
-# The app's allowlist still guards every dial and SMS, whatever the LLM asks for.
-PHONE_TOOLS: dict[str, tuple[str, str, dict, list[str]]] = {
-    "add_to_call": ("conference.create", "Call someone and add them to this call (the caller stays on).",
-                    {"number": {"type": "string"}, "contact": {"type": "string", "description": "a contact name"}}, []),
-    "merge_calls": ("conference.join", "Merge the held call into a conference.", {}, []),
-    "hold": ("call.hold", "Put this call on hold.", {}, []),
-    "resume": ("call.resume", "Take this call off hold.", {}, []),
-    "send_sms": ("sms.send", "Send a text message.", {"number": {"type": "string"}, "text": {"type": "string"}}, ["number", "text"]),
-    "list_sms": ("sms.list", "The latest text messages.", {"limit": {"type": "integer"}}, []),
-    "read_sms": ("sms.read", "One text message in full.", {"handle": {"type": "string"}}, ["handle"]),
-    "find_contact": ("contacts.search", "Look up a contact's numbers by name.", {"query": {"type": "string"}}, ["query"]),
-    "phone_status": ("status", "The phone's link and the calls in progress.", {}, []),
-    "call_transcript": ("transcript.get", "What has been said on this call so far.", {}, []),
+NAME = {"name": {"type": "string", "description": "the person's name"}}
+# Call controls: name -> (PhAP method on the current call, description).
+CALL_TOOLS = {
+    "merge_calls": ("conference.join", "Merge the held call into a conference."),
+    "hold": ("call.hold", "Put this call on hold."),
+    "resume": ("call.resume", "Take this call off hold."),
 }
-CALL_SCOPED = {"conference.create", "conference.join", "call.hold", "call.resume", "transcript.get"}
-LOCAL_TOOLS = [
-    ("time_now", "The current local date and time."),
-    ("weather", "The weather now, and the forecast for today and tomorrow."),
-    ("hang_up", "End the call, only when the caller asks to; say goodbye in the same reply."),
-]
 
 
-def _tool(name: str, description: str, properties: dict, required: list[str]) -> dict:
-    parameters = {"type": "object", "properties": properties, "required": required}
+def _tool(name: str, description: str, properties: dict | None = None, required: list[str] | None = None) -> dict:
+    parameters = {"type": "object", "properties": properties or {}, "required": required or []}
     return {"type": "function", "function": {"name": name, "description": description, "parameters": parameters}}
 
 
-TOOLS = [_tool(name, description, {}, []) for name, description in LOCAL_TOOLS] + [
-    _tool(name, description, properties, required) for name, (_, description, properties, required) in PHONE_TOOLS.items()
+TOOLS = [
+    _tool("time_now", "The current local date and time."),
+    _tool("weather", "The weather now, and the forecast for today and tomorrow."),
+    _tool("hang_up", "End the call, only when the caller asks to; say goodbye in the same reply."),
+    _tool("add_to_call", "Call someone by name and add them to this call (the caller stays on).", NAME, ["name"]),
+    _tool("send_sms", "Text someone by name.", NAME | {"text": {"type": "string"}}, ["name", "text"]),
+    *(_tool(name, description) for name, (_, description) in CALL_TOOLS.items()),
 ]
+
+
+class Phonebook:
+    """The only people the agent can reach. The LLM names them; it never sees their numbers."""
+
+    def __init__(self, entries: list[tuple[str, str]]) -> None:
+        self.entries = entries
+
+    @classmethod
+    def load(cls, path: Path) -> "Phonebook":
+        with path.open(encoding="utf-8", newline="") as f:
+            rows = [[cell.strip() for cell in row] for row in csv.reader(f)]
+        return cls([(row[0], row[1].replace(" ", "")) for row in rows[1:] if len(row) >= 2 and row[0] and row[1]])
+
+    def resolve(self, name: str) -> tuple[str, str] | None:
+        """The one entry this name means: an exact name, else the only name whose words start with these words."""
+        wanted = name.casefold().split()
+        if not wanted:
+            return None
+        exact = [e for e in self.entries if e[0].casefold().split() == wanted]
+        if len(exact) == 1:
+            return exact[0]
+        prefixed = [e for e in self.entries if all(any(w.startswith(q) for w in e[0].casefold().split()) for q in wanted)]
+        return prefixed[0] if len(prefixed) == 1 else None
 
 
 class LlmError(Exception):
@@ -174,13 +193,21 @@ class PhapClient:
 
 
 class CallAgent:
-    def __init__(self, client: PhapClient, llm: Llm, *, fetch_weather: Callable[[], Awaitable[dict]]) -> None:
-        self.client, self.llm, self.fetch_weather = client, llm, fetch_weather
+    def __init__(self, client: PhapClient, llm: Llm, *, fetch_weather: Callable[[], Awaitable[dict]],
+                 phonebook: Phonebook) -> None:
+        self.client, self.llm, self.fetch_weather, self.phonebook = client, llm, fetch_weather, phonebook
 
     async def run_forever(self) -> None:
         while True:
-            ringing = await self.client.next_event(lambda e: e["type"] == "call.ringing" and e.get("allowed", False))
+            ringing = await self.client.next_event(
+                lambda e: e["type"] == "call.ringing" and (e.get("allowed", False) or not e.get("number"))
+            )
             call_id = ringing["callId"]
+            if not ringing.get("number"):  # caller ID withheld
+                log.info("rejecting a private number")
+                with contextlib.suppress(Exception):
+                    await self.client.request("call.reject", {"callId": call_id})
+                continue
             log.info("answering %s", ringing.get("number"))
             try:
                 await self.client.request("call.answer", {"callId": call_id})
@@ -230,15 +257,17 @@ class CallAgent:
         raise LlmError("too many tool rounds")
 
     async def _tool(self, call_id: str, name: str, args: dict) -> str:
-        if name in PHONE_TOOLS:
-            method = PHONE_TOOLS[name][0]
-            params = args | ({"callId": call_id} if method in CALL_SCOPED else {})
-            try:
-                return json.dumps(await self.client.request(method, params))
-            except Exception as e:
-                if "not_allowed" in str(e):
-                    return "Not allowed: that number is not on the allowlist. Tell the caller; do not retry."
-                return f"Failed: {e}"
+        if name in ("add_to_call", "send_sms"):
+            if not (entry := self.phonebook.resolve(str(args.get("name", "")))):
+                return UNREACHABLE
+            person, number = entry
+            if name == "add_to_call":
+                method, params, done = "conference.create", {"callId": call_id, "number": number}, f"Calling {person}."
+            else:
+                method, params, done = "sms.send", {"number": number, "text": str(args.get("text", ""))}, f"Sent to {person}."
+            return await self._phone(method, params, done)
+        if name in CALL_TOOLS:
+            return await self._phone(CALL_TOOLS[name][0], {"callId": call_id}, "Done.")
         if name == "time_now":
             return datetime.now().astimezone().strftime("%A %d %B %Y, %H:%M")
         if name == "weather":
@@ -249,6 +278,15 @@ class CallAgent:
         if name == "hang_up":
             return "The call will end after your reply."
         return f"Unknown tool {name}."
+
+    async def _phone(self, method: str, params: dict, done: str) -> str:
+        """Run a PhAP method; what the LLM hears back never carries a number or an error detail."""
+        try:
+            await self.client.request(method, params)
+        except Exception as e:
+            log.info("%s failed: %s", method, e)
+            return UNREACHABLE if "not_allowed" in str(e) else FAILED
+        return done
 
     async def _say(self, call_id: str, text: str) -> None:
         if not text:

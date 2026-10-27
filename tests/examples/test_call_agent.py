@@ -7,11 +7,13 @@ from pathlib import Path
 
 import pytest
 
-from examples.call_agent.agent import CallAgent, LlmError, PhapClient, summarise_forecast
+from examples.call_agent.agent import UNREACHABLE, CallAgent, LlmError, PhapClient, Phonebook, summarise_forecast
+from examples.call_agent.home import init_home
+from telefony_app.service import Policy
 from tests.conftest import ALLOWED, BLOCKED, TOKEN
-from telefony_app.phone import Contact, SmsMessage
 from tests.fakes import FakePhone
 
+PHONEBOOK = Phonebook([("Oliver van Kent", ALLOWED), ("Olivia Smith", ALLOWED), ("Mai Tran", BLOCKED)])
 SAMPLE = json.loads((Path(__file__).parent / "open_meteo_sample.json").read_text(encoding="utf-8"))
 
 
@@ -34,13 +36,18 @@ def say(text: str) -> dict:
     return {"role": "assistant", "content": text}
 
 
-def use(name: str, **args) -> dict:
-    call = {"id": f"t-{name}", "type": "function", "function": {"name": name, "arguments": json.dumps(args)}}
+def use(tool: str, **args) -> dict:
+    call = {"id": f"t-{tool}", "type": "function", "function": {"name": tool, "arguments": json.dumps(args)}}
     return {"role": "assistant", "content": None, "tool_calls": [call]}
 
 
 async def no_weather() -> dict:
     raise AssertionError("weather was not expected")
+
+
+@pytest.fixture
+def policy() -> Policy:  # unanswered calls keep ringing, so only the agent can reject one
+    return Policy(allowlist=[ALLOWED], fallback_policy="ring", ring_timeout_s=0.2)
 
 
 @pytest.fixture
@@ -50,7 +57,7 @@ async def run_agent(start_server, phone: FakePhone):
 
         async def _run(llm: ScriptedLlm, fetch_weather=no_weather) -> CallAgent:
             client = await stack.enter_async_context(PhapClient.connect(await start_server(phone), TOKEN))
-            agent = CallAgent(client, llm, fetch_weather=fetch_weather)
+            agent = CallAgent(client, llm, fetch_weather=fetch_weather, phonebook=PHONEBOOK)
             task = asyncio.create_task(agent.run_forever())
             stack.callback(task.cancel)
             return agent
@@ -81,6 +88,13 @@ async def test_blocked_caller_is_never_answered(run_agent, phone: FakePhone):
     await run_agent(ScriptedLlm())
     phone.ring(BLOCKED)
     await asyncio.sleep(0.3)
+    assert ("answer",) not in phone.commands
+
+
+async def test_private_number_is_rejected(run_agent, phone: FakePhone):
+    await run_agent(ScriptedLlm())
+    phone.ring("")  # caller ID withheld
+    await until(lambda: ("reject",) in phone.commands)
     assert ("answer",) not in phone.commands
 
 
@@ -166,47 +180,67 @@ async def test_llm_failure_apologises_and_the_call_carries_on(run_agent, phone: 
     assert not hung_up(phone)
 
 
-# --- phone tools: the agent's PhAP access, still guarded by the app's allowlist ---
+# --- phone tools: the LLM names people from the harness phonebook; it never sees or gives a number ---
 
 
-async def tool_result(run_agent, phone: FakePhone, name: str, **args) -> str:
+async def tool_result(run_agent, phone: FakePhone, tool: str, **args) -> str:
     """Have the LLM use one tool during a call; returns what the tool told it."""
-    llm = ScriptedLlm(use(name, **args), say("Done."))
+    llm = ScriptedLlm(use(tool, **args), say("Done."))
     await answered(run_agent, phone, llm)
     phone.caller_says("please do it")
     await until(lambda: len(llm.seen) == 2)
     return llm.seen[1][-1]["content"]
 
 
-async def test_add_to_call_conferences_an_allowed_number(run_agent, phone: FakePhone):
-    await tool_result(run_agent, phone, "add_to_call", number=ALLOWED)
+def dialled(phone: FakePhone) -> bool:
+    return any(c[0] in ("consult", "dial", "sms_send") for c in phone.commands)
+
+
+async def test_add_to_call_dials_the_phonebook_number(run_agent, phone: FakePhone):
+    result = await tool_result(run_agent, phone, "add_to_call", name="oliver van kent")
     assert ("consult", ALLOWED) in phone.commands
+    assert "Oliver van Kent" in result
 
 
-async def test_a_blocked_number_is_refused_and_the_llm_is_told(run_agent, phone: FakePhone):
-    result = await tool_result(run_agent, phone, "add_to_call", number=BLOCKED)
-    assert "not allowed" in result.lower()
-    assert not any(c[0] == "consult" for c in phone.commands)
-    await until(lambda: phone.spoken[-1] == "Done.")  # the call carries on
+@pytest.mark.parametrize("name", ["Nobody Known", "Oli", ""])  # unknown, ambiguous (Oliver/Olivia), empty
+async def test_unknown_or_ambiguous_names_reach_nobody(run_agent, phone: FakePhone, name: str):
+    assert await tool_result(run_agent, phone, "add_to_call", name=name) == UNREACHABLE
+    assert not dialled(phone)
 
 
-async def test_send_sms_texts_an_allowed_number(run_agent, phone: FakePhone):
-    await tool_result(run_agent, phone, "send_sms", number=ALLOWED, text="see you at 6")
+async def test_a_number_instead_of_a_name_reaches_nobody(run_agent, phone: FakePhone):
+    assert await tool_result(run_agent, phone, "send_sms", name=ALLOWED, text="hi") == UNREACHABLE
+    assert not dialled(phone)
+
+
+async def test_phonebook_entry_the_app_blocks_gets_the_same_answer(run_agent, phone: FakePhone):
+    assert await tool_result(run_agent, phone, "add_to_call", name="Mai Tran") == UNREACHABLE
+
+
+async def test_send_sms_texts_the_phonebook_number(run_agent, phone: FakePhone):
+    result = await tool_result(run_agent, phone, "send_sms", name="Olivia Smith", text="see you at 6")
     assert ("sms_send", ALLOWED, "see you at 6") in phone.commands
+    assert not any(ch.isdigit() for ch in result.replace("6", ""))  # no number leaks back
 
 
-async def test_list_sms_shows_the_inbox(run_agent, phone: FakePhone):
-    phone.sms["h1"] = SmsMessage("h1", ALLOWED, "Sam", "running late", "2026-10-27T09:00:00Z")
-    result = await tool_result(run_agent, phone, "list_sms")
-    assert "running late" in result and "Sam" in result
-
-
-async def test_find_contact_returns_numbers(run_agent, phone: FakePhone):
-    phone.contacts_list = [Contact("Sam Smith", [("CELL", "0491570156")])]
+async def test_address_book_tools_do_not_exist(run_agent, phone: FakePhone):
+    phone.contacts_list = []
     result = await tool_result(run_agent, phone, "find_contact", query="sam")
-    assert "0491570156" in result
+    assert "unknown tool" in result.lower()
 
 
-async def test_hold_puts_the_call_on_hold(run_agent, phone: FakePhone):
-    await tool_result(run_agent, phone, "hold")
-    assert ("hold",) in phone.commands
+def test_phonebook_reads_a_hand_written_csv(tmp_path: Path):
+    path = tmp_path / "phonebook.csv"
+    path.write_text('name,number\n  Oliver van Kent , 0491 570 156\n"Smith, Olivia",+61491570157\n\n', encoding="utf-8")
+    book = Phonebook.load(path)
+    assert book.resolve("oliver van kent") == ("Oliver van Kent", "0491570156")
+    assert book.resolve("Smith, Olivia") == ("Smith, Olivia", "+61491570157")
+
+
+def test_init_creates_the_home_folder_and_never_overwrites(tmp_path: Path):
+    home = tmp_path / "telefony-call-agent"
+    init_home(home)
+    assert (home / "call_agent.toml").exists() and (home / "phonebook.csv").read_text(encoding="utf-8").startswith("name,number")
+    (home / "phonebook.csv").write_text("name,number\nMe,0491570156\n", encoding="utf-8")
+    init_home(home)
+    assert "Me,0491570156" in (home / "phonebook.csv").read_text(encoding="utf-8")
