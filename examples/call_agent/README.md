@@ -30,7 +30,7 @@ sequenceDiagram
     Agent->>App: call.hangup (only when the caller asks)
 ```
 
-The LLM is any OpenAI-compatible chat API: OpenRouter, or a local llama-server. If it fails, the agent apologises and hangs up.
+The LLM is any OpenAI-compatible chat API: OpenRouter, or a local llama-server. If it fails, the agent apologises and the call carries on; only the caller (or a hang_up they ask for) ends it.
 
 ## Run
 
