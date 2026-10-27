@@ -14,6 +14,7 @@ from pathlib import Path
 from bumble import hci, hfp, rfcomm
 from bumble.device import Device, DeviceConfiguration
 from bumble.transport import open_transport
+from bumble.transport.common import TransportInitError
 
 from telefony_app import __version__
 from telefony_app.bt.autoconnect import connect_bonded_phone
@@ -29,6 +30,7 @@ from telefony_app.voice import make_stt, make_tts
 from telefony_app.web.app import WebApp
 
 HANDS_FREE_CLASS_OF_DEVICE = 0x200408
+NO_DONGLE_EXIT = 3  # with the stderr line "telefony-app: dongle not found", which Helm matches
 SDP_HANDLE, MNS_SDP_HANDLE = 0x00010001, 0x00010002
 log = logging.getLogger("telefony_app")
 
@@ -111,7 +113,12 @@ def main() -> None:
     args = parser.parse_args()
     # Logs go to stderr: with --mcp, stdout carries the MCP protocol.
     logging.basicConfig(level=logging.INFO, stream=sys.stderr, format="%(asctime)s %(name)s %(message)s")
-    asyncio.run(run(load_config(args.config), args.config, args.mcp))
+    try:
+        asyncio.run(run(load_config(args.config), args.config, args.mcp))
+    except TransportInitError as failed:
+        print("telefony-app: dongle not found", file=sys.stderr)
+        print(f"({failed}; check it is plugged in, bound to libusbK, and matches [device] transport)", file=sys.stderr)
+        sys.exit(NO_DONGLE_EXIT)
 
 
 if __name__ == "__main__":
