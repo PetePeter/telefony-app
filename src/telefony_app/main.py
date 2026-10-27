@@ -15,6 +15,7 @@ from bumble import hci, hfp, rfcomm
 from bumble.device import Device, DeviceConfiguration
 from bumble.transport import open_transport
 
+from telefony_app import __version__
 from telefony_app.bt.autoconnect import connect_bonded_phone
 from telefony_app.bt.bluetooth_phone import BluetoothPhone
 from telefony_app.bt.hf_line import HF_CONFIGURATION, HfLine
@@ -104,6 +105,7 @@ async def run(config: Config, config_path: Path, mcp: bool) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--version", action="version", version=__version__)
     parser.add_argument("config", type=Path, help="TOML config (see telefony.example.toml)")
     parser.add_argument("--mcp", action="store_true", help="serve MCP on stdio instead of PhAP")
     args = parser.parse_args()

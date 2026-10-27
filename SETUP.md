@@ -90,7 +90,7 @@ The pairing is remembered; later runs reconnect by themselves.
 
 ## 7. Optional: Piper voice
 
-The Windows voice works with no setup. For Piper (GPL-3.0, so telefony-app only ever runs it as a separate program), install the `piper` executable on PATH, download a voice and set it in the config:
+The Windows voice works with no setup. For Piper (GPL-3.0, so telefony-app only ever runs it as a separate program), install it (`.venv/Scripts/pip install piper-tts`; the venv copy is found even when the venv is not activated, otherwise put `piper` on PATH), download a voice and set it in the config:
 
 ```sh
 mkdir models
@@ -99,6 +99,8 @@ curl -L -o models/en_GB-alan-medium.onnx.json https://huggingface.co/rhasspy/pip
 ```
 
 `[voice] tts = "piper"`, `piper_model = "models/en_GB-alan-medium.onnx"`.
+
+Any Piper voice works, including your own: keep the `.onnx.json` next to the `.onnx` (its sample rate is read from there), and absolute paths with spaces are fine, e.g. `piper_model = "E:/Voices/me/me.onnx"`. One way to make one: clone your voice with a zero-shot TTS (e.g. Qwen3-TTS), synthesise a couple of thousand sentences with it, then fine-tune a Piper voice from `en_GB-alan-medium` on those clips.
 
 **Verify:** the startup log says `text-to-speech: PiperTts`.
 

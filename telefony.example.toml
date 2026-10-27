@@ -18,7 +18,7 @@ event_buffer = 1000
 
 [voice]
 tts = "auto"                        # auto | piper | sapi | none
-# piper_model = "models/en_GB-alan-medium.onnx"   # needs the `piper` executable on PATH
+# piper_model = "models/en_GB-alan-medium.onnx"   # needs `piper` (pip install piper-tts) and the .onnx.json beside the model
 stt_model = "small.en"              # faster-whisper model; install with: pip install telefony-app[stt]
 
 [web]                               # operator page for config, status and pairing; omit admin_token to turn it off
