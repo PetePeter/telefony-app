@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>telefony</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #ffffff; --text: #1d2330; --muted: #5d6676; --line: #dde1e8;
+    --accent: #2f6fde; --ok: #1f8a4c; --warn: #b26a00; --bad: #c0392b;
+    --font: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; --mono: ui-monospace, Consolas, monospace;
+    --size: 15px; --small: 13px; --radius: 8px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #14171c; --panel: #1c2027; --text: #e6e9ef; --muted: #98a1b0; --line: #2d333d; --accent: #6b9cff; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: var(--size)/1.5 var(--font); }
+  header { display: flex; align-items: center; gap: 24px; padding: 12px 24px; background: var(--panel); border-bottom: 1px solid var(--line); }
+  header h1 { font-size: 18px; margin: 0; }
+  nav button { background: none; border: 0; padding: 8px 12px; color: var(--muted); font: inherit; cursor: pointer; border-bottom: 2px solid transparent; }
+  nav button.on { color: var(--text); border-bottom-color: var(--accent); }
+  main { max-width: 760px; margin: 24px auto; padding: 0 16px; }
+  section.panel { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 16px 20px; margin-bottom: 16px; }
+  h2 { font-size: var(--size); margin: 0 0 12px; }
+  label { display: grid; grid-template-columns: 180px 1fr; align-items: center; gap: 12px; margin: 8px 0; }
+  label span { color: var(--muted); font-size: var(--small); }
+  input, select, textarea { font: var(--size) var(--font); color: var(--text); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; width: 100%; }
+  textarea { font-family: var(--mono); min-height: 80px; }
+  button.primary { background: var(--accent); color: #fff; border: 0; border-radius: 6px; padding: 8px 16px; font: inherit; cursor: pointer; }
+  button.small { background: none; border: 1px solid var(--line); color: var(--text); border-radius: 6px; padding: 4px 10px; font: var(--small) var(--font); cursor: pointer; }
+  .note { padding: 8px 12px; border-radius: 6px; margin: 12px 0; font-size: var(--small); }
+  .note.ok { background: color-mix(in srgb, var(--ok) 15%, transparent); }
+  .note.warn { background: color-mix(in srgb, var(--warn) 18%, transparent); }
+  .note.bad { background: color-mix(in srgb, var(--bad) 15%, transparent); }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; background: var(--muted); }
+  .dot.up { background: var(--ok); } .dot.down { background: var(--bad); }
+  ul.plain { list-style: none; padding: 0; margin: 0; }
+  ul.plain li { display: flex; justify-content: space-between; align-items: center; padding: 6px 0; border-bottom: 1px solid var(--line); font-family: var(--mono); font-size: var(--small); }
+  #events { font-family: var(--mono); font-size: var(--small); max-height: 320px; overflow: auto; }
+  .muted { color: var(--muted); font-size: var(--small); }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<header>
+  <h1>telefony</h1>
+  <nav id="tabs" hidden>
+    <button data-tab="config" class="on">Config</button>
+    <button data-tab="status">Status</button>
+    <button data-tab="phone">Phone</button>
+  </nav>
+</header>
+<main>
+  <section class="panel" id="login">
+    <h2>Sign in</h2>
+    <form id="login-form">
+      <label><span>Admin token</span><input type="password" name="token" autocomplete="current-password" required></label>
+      <button class="primary">Sign in</button>
+    </form>
+    <div class="note bad" id="login-error" hidden>Wrong token.</div>
+  </section>
+
+  <div id="tab-config" hidden>
+    <form id="config-form">
+      <section class="panel">
+        <h2>Policy <span class="muted">— applies immediately</span></h2>
+        <label><span>Allowlist (one per line)</span><textarea name="policy.allowlist"></textarea></label>
+        <label><span>Country code</span><input name="policy.country_code"></label>
+        <label><span>Unanswered ringing</span><select name="policy.fallback_policy"><option>ring</option><option>reject</option></select></label>
+        <label><span>Ring timeout (s)</span><input name="policy.ring_timeout_s" type="number" min="1" step="any"></label>
+      </section>
+      <section class="panel">
+        <h2>Device, PhAP, voice, web <span class="muted">— apply on restart</span></h2>
+        <label><span>Bluetooth transport</span><input name="device.transport"></label>
+        <label><span>PhAP bind</span><input name="phap.bind"></label>
+        <label><span>PhAP token</span><input name="phap.token" type="password" autocomplete="off"></label>
+        <label><span>Text-to-speech</span><select name="voice.tts"><option>auto</option><option>piper</option><option>sapi</option><option>none</option></select></label>
+        <label><span>Piper model</span><input name="voice.piper_model"></label>
+        <label><span>Whisper model</span><input name="voice.stt_model"></label>
+        <label><span>Web UI bind</span><input name="web.bind"></label>
+        <label><span>Admin token</span><input name="web.admin_token" type="password" autocomplete="new-password"></label>
+      </section>
+      <button class="primary">Save</button>
+      <div class="note" id="config-result" hidden></div>
+    </form>
+  </div>
+
+  <div id="tab-status" hidden>
+    <section class="panel">
+      <h2>Phone</h2>
+      <p id="status-line"><span class="dot"></span>…</p>
+      <ul class="plain" id="calls"></ul>
+    </section>
+    <section class="panel">
+      <h2>Events</h2>
+      <div id="events" class="muted">Waiting for the phone…</div>
+    </section>
+  </div>
+
+  <div id="tab-phone" hidden>
+    <section class="panel">
+      <h2>Pair a phone</h2>
+      <p class="muted">While waiting for a phone, this PC is discoverable as <b>telefony</b>. On the phone: Settings → Bluetooth → pair <b>telefony</b>.
+        On an iPhone, then tap ⓘ next to telefony and turn on Show Notifications and Sync Contacts.</p>
+      <p id="pair-state"><span class="dot"></span>…</p>
+    </section>
+    <section class="panel">
+      <h2>Bonded phones</h2>
+      <ul class="plain" id="phones"></ul>
+      <p class="muted">Forgetting a phone takes effect on the next start. Remove telefony on the phone too.</p>
+    </section>
+  </div>
+</main>
+<script>
+const $ = (s) => document.querySelector(s);
+const api = async (method, path, body) => {
+  const r = await fetch(path, { method, headers: { "Content-Type": "application/json", "X-Telefony": "1" },
+    body: body === undefined ? undefined : JSON.stringify(body), credentials: "same-origin" });
+  const data = await r.json().catch(() => ({}));
+  if (r.status === 401) showLogin();
+  if (!r.ok) throw new Error(data.error || r.statusText);
+  return data;
+};
+const text = (el, value) => { el.textContent = value; return el; };
+const dot = (el, cls, label) => { el.replaceChildren(Object.assign(document.createElement("span"), { className: "dot " + cls }), label); };
+
+function showLogin() { $("#login").hidden = false; $("#tabs").hidden = true; document.querySelectorAll("[id^=tab-]").forEach((t) => t.hidden = true); }
+function showTab(name) {
+  document.querySelectorAll("nav button").forEach((b) => b.classList.toggle("on", b.dataset.tab === name));
+  document.querySelectorAll("[id^=tab-]").forEach((t) => t.hidden = t.id !== "tab-" + name);
+  ({ config: loadConfig, status: pollStatus, phone: loadPhones })[name]();
+}
+$("#tabs").addEventListener("click", (e) => e.target.dataset.tab && showTab(e.target.dataset.tab));
+
+$("#login-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  try {
+    await api("POST", "/api/login", { token: e.target.token.value });
+    $("#login").hidden = true; $("#login-error").hidden = true; $("#tabs").hidden = false; showTab("config");
+  } catch { $("#login-error").hidden = false; }
+});
+
+async function loadConfig() {
+  const config = await api("GET", "/api/config");
+  for (const field of $("#config-form").elements) {
+    if (!field.name) continue;
+    const [section, key] = field.name.split(".");
+    const value = config[section]?.[key];
+    field.value = Array.isArray(value) ? value.join("\n") : value ?? "";
+  }
+}
+$("#config-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const changes = {};
+  for (const field of e.target.elements) {
+    if (!field.name || field.value === "") continue;
+    const [section, key] = field.name.split(".");
+    let value = field.value;
+    if (key === "allowlist") value = value.split("\n").map((s) => s.trim()).filter(Boolean);
+    else if (field.type === "number") value = Number(value);
+    (changes[section] ??= {})[key] = value;
+  }
+  const result = $("#config-result");
+  try {
+    const { restartRequired } = await api("POST", "/api/config", changes);
+    result.className = "note " + (restartRequired ? "warn" : "ok");
+    text(result, restartRequired ? "Saved. Restart telefony-app to apply the device, PhAP, voice or web changes." : "Saved and applied.");
+  } catch (err) { result.className = "note bad"; text(result, err.message); }
+  result.hidden = false;
+});
+
+let stream = null;
+async function pollStatus() {
+  const status = await api("GET", "/api/status");
+  const waiting = status.phone === "waiting";
+  dot($("#status-line"), waiting ? "" : status.state.link === "up" ? "up" : "down",
+    waiting ? "Waiting for the phone to connect" : `Link ${status.state.link}, engine ${status.state.engine}`);
+  dot($("#pair-state"), waiting ? "" : "up", waiting ? "Discoverable, waiting for a phone" : "Phone connected");
+  $("#calls").replaceChildren(...(status.state?.calls ?? []).map((c) =>
+    text(document.createElement("li"), `${c.callId} ${c.direction} ${c.number} — ${c.state}`)));
+  if (!waiting && !stream) {
+    stream = new EventSource("/api/events");
+    $("#events").textContent = "";
+    stream.onmessage = (m) => {
+      const e = JSON.parse(m.data);
+      if (e.type === "snapshot") return;
+      $("#events").prepend(text(document.createElement("div"), `${e.ts.slice(11, 19)} ${e.type} ${e.callId ?? ""} ${e.state ?? e.digit ?? e.status ?? ""}`));
+      if (e.type === "call.state" || e.type === "link") pollStatus();
+    };
+  }
+  if (waiting) setTimeout(() => !$("#tab-status").hidden || !$("#tab-phone").hidden ? pollStatus() : null, 2000);
+}
+
+async function loadPhones() {
+  pollStatus();
+  const { phones } = await api("GET", "/api/phones");
+  $("#phones").replaceChildren(...(phones.length ? phones.map((address) => {
+    const li = text(document.createElement("li"), address);
+    const forget = text(Object.assign(document.createElement("button"), { className: "small" }), "Forget");
+    forget.onclick = async () => { if (confirm(`Forget ${address}?`)) { await api("POST", "/api/phones/forget", { address }); loadPhones(); } };
+    li.append(forget);
+    return li;
+  }) : [text(document.createElement("li"), "None yet.")]));
+}
+
+api("GET", "/api/status").then(() => { $("#login").hidden = true; $("#tabs").hidden = false; showTab("config"); }).catch(() => {});
+</script>
+</body>
+</html>

@@ -6,6 +6,7 @@
 
 import argparse
 import asyncio
+import contextlib
 import logging
 import sys
 from pathlib import Path
@@ -24,6 +25,7 @@ from telefony_app.mcp_projection import McpProjection
 from telefony_app.phap.server import PhapServer
 from telefony_app.service import PhoneService
 from telefony_app.voice import make_stt, make_tts
+from telefony_app.web.app import WebApp
 
 HANDS_FREE_CLASS_OF_DEVICE = 0x200408
 SDP_HANDLE, MNS_SDP_HANDLE = 0x00010001, 0x00010002
@@ -67,7 +69,7 @@ async def connect_phone(device: Device) -> tuple[HfLine, rfcomm.DLC]:
     return await connected.get()
 
 
-async def run(config: Config, mcp: bool) -> None:
+async def run(config: Config, config_path: Path, mcp: bool) -> None:
     tts, stt = make_tts(config.tts, config.piper_model), make_stt(config.stt_model)
     log.info("text-to-speech: %s; speech-to-text: %s", type(tts).__name__ if tts else "none", "whisper" if stt else "none")
     async with await open_transport(config.transport) as transport:
@@ -81,15 +83,23 @@ async def run(config: Config, mcp: bool) -> None:
         if getattr(transport.sink, "isochronous_out", None) is not None:
             UsbScoStreamer(transport.sink)
         device = Device.from_config_with_hci(device_config, transport.source, transport.sink)
-        line, dlc = await connect_phone(device)
-        log.info("phone connected")
-        service = PhoneService(BluetoothPhone(line, dlc, tts, stt), config.policy, config.event_buffer)
-        if mcp:
-            await McpProjection(service).build().run_stdio_async()
-            return
-        async with PhapServer(service, config.token, config.heartbeat_s).serve(config.host, config.port) as port:
-            log.info("PhAP listening on ws://%s:%d/phap", config.host, port)
-            await asyncio.get_running_loop().create_future()
+        async with contextlib.AsyncExitStack() as stack:
+            web = None
+            if config.web_token:  # up before the phone, so pairing can be watched from the page
+                web = WebApp(config_path, config, keystore=lambda: device.keystore)
+                port = await stack.enter_async_context(web.serve())
+                log.info("web UI on http://%s:%d/", config.web_host, port)
+            line, dlc = await connect_phone(device)
+            log.info("phone connected")
+            service = PhoneService(BluetoothPhone(line, dlc, tts, stt), config.policy, config.event_buffer)
+            if web:
+                web.service = service
+            if mcp:
+                await McpProjection(service).build().run_stdio_async()
+                return
+            async with PhapServer(service, config.token, config.heartbeat_s).serve(config.host, config.port) as port:
+                log.info("PhAP listening on ws://%s:%d/phap", config.host, port)
+                await asyncio.get_running_loop().create_future()
 
 
 def main() -> None:
@@ -99,7 +109,7 @@ def main() -> None:
     args = parser.parse_args()
     # Logs go to stderr: with --mcp, stdout carries the MCP protocol.
     logging.basicConfig(level=logging.INFO, stream=sys.stderr, format="%(asctime)s %(name)s %(message)s")
-    asyncio.run(run(load_config(args.config), args.mcp))
+    asyncio.run(run(load_config(args.config), args.config, args.mcp))
 
 
 if __name__ == "__main__":

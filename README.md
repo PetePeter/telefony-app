@@ -36,6 +36,7 @@ flowchart LR
 | `service.py` | `PhoneService`: the single source of truth for calls, allowlist enforcement, the fallback policy, transcripts and the event log. Both protocols are thin views of it; a run serves one or the other, never both. |
 | `phap/server.py` | PhAP: hello/welcome, roles, schema-shaped results and errors, idempotent methods, resume, heartbeat. |
 | `mcp_projection.py` | MCP tools. `listen` blocks for the caller's next words or key presses, buffered while `say` plays. |
+| `web/` | Operator page on its own loopback port (`[web]`, admin token): edit `telefony.toml` (policy applies live, the rest on restart), live status and events, bonded phones. Up before the phone connects, so pairing can be watched. No PhAP/MCP method touches config. |
 | `phone.py` | The `Phone` port, so the service never sees Bluetooth. |
 | `bt/` | The Bluetooth implementation of that port (HfLine, a DTMF decoder, OBEX/PBAP/MAP), from the telefony-cube proof of concept. |
 | `voice.py` | TTS backends, chosen by `voice.tts`: Piper as a separate process, or Windows SAPI, or none (`call.say` then returns `1006 unsupported`). Also faster-whisper STT. |

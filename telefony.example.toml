@@ -1,4 +1,5 @@
-# telefony-app configuration. Read once at startup; neither PhAP nor MCP can change it.
+# telefony-app configuration. Neither PhAP nor MCP can change it; only the [web] admin page can
+# (policy changes apply at once, the rest on restart).
 
 [device]
 transport = "usb:10D7:B012+sco=2"   # Bumble transport for the libusbK-bound dongle
@@ -19,3 +20,7 @@ event_buffer = 1000
 tts = "auto"                        # auto | piper | sapi | none
 # piper_model = "models/en_GB-alan-medium.onnx"   # needs the `piper` executable on PATH
 stt_model = "small.en"              # faster-whisper model; install with: pip install telefony-app[stt]
+
+[web]                               # operator page for config, status and pairing; omit admin_token to turn it off
+bind = "127.0.0.1:7782"             # loopback only
+admin_token = "change-me-too"       # not the PhAP token: agents hold that one
