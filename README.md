@@ -1,5 +1,7 @@
 # telefony-app
 
+> **Status: in development.** Expect rough edges and breaking changes; YMMV with your phone, Bluetooth dongle and OS.
+
 The sample **[PhAP](https://github.com/PetePeter/phone-agent-protocol) implementation**: a PhAP server, plus an example LLM host that uses it. A PC pretends to be a Bluetooth hands-free unit (a car kit), so AI agents can use a real Android phone or iPhone. They can:
 
 - place and answer calls, and talk on them
@@ -59,8 +61,8 @@ cp telefony.example.toml telefony.toml            # dongle, token, allowlist
 The app serves **one or the other**: PhAP by default, or MCP on stdio with `--mcp`. Example MCP client entry:
 
 ```json
-{"mcpServers": {"telefony": {"command": "X:/coding/telefony-app/.venv/Scripts/telefony-app.exe",
-                             "args": ["X:/coding/telefony-app/telefony.toml", "--mcp"]}}}
+{"mcpServers": {"telefony": {"command": "<path-to>/telefony-app/.venv/Scripts/telefony-app.exe",
+                             "args": ["<path-to>/telefony-app/telefony.toml", "--mcp"]}}}
 ```
 
 ## Compliance
