@@ -19,7 +19,7 @@ MASK = "********"
 SECRETS = {("phap", "token"), ("web", "admin_token")}
 EDITABLE = {
     "device": {"transport"},
-    "policy": {"allowlist", "country_code", "fallback_policy", "ring_timeout_s"},
+    "policy": {"allowlist", "country_code", "fallback_policy", "ring_timeout_s", "outbound"},
     "phap": {"bind", "token", "heartbeat_s", "event_buffer"},
     "voice": {"tts", "piper_model", "stt_model"},
     "web": {"bind", "admin_token"},
@@ -124,6 +124,7 @@ class WebApp:
         live = self.config.policy
         live.allowlist, live.country_code = config.policy.allowlist, config.policy.country_code
         live.fallback_policy, live.ring_timeout_s = config.policy.fallback_policy, config.policy.ring_timeout_s
+        live.outbound = config.policy.outbound
 
     # --- status ---
 

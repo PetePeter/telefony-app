@@ -9,6 +9,7 @@ allowlist = ["+61491570156"]        # the only numbers that may be called, texte
 country_code = "+61"                # how national numbers (04..) are matched against the allowlist
 fallback_policy = "ring"            # unanswered ringing: ring (leave it to the phone) | reject
 ring_timeout_s = 15
+outbound = "allowlist"              # allowlist | all (any well-formed number: the controller alone decides; risky)
 
 [phap]
 bind = "127.0.0.1:7781"             # loopback only in v0.1

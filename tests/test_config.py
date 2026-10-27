@@ -44,6 +44,7 @@ def test_defaults_apply_to_optional_settings(tmp_path: Path):
     assert config.policy.fallback_policy == "ring"
     assert config.policy.ring_timeout_s == 15
     assert config.policy.allowlist == []
+    assert config.policy.outbound == "allowlist"
     assert (config.host, config.port) == ("127.0.0.1", 7781)
     assert config.tts == "auto"
 
@@ -55,6 +56,7 @@ def test_defaults_apply_to_optional_settings(tmp_path: Path):
         ('[device]\ntransport = "usb:0"\n', "phap.token"),
         ('[device]\ntransport = "usb:0"\n[phap]\ntoken = "t"\n[policy]\nfallback_policy = "answer"\n', "fallback_policy"),
         ('[device]\ntransport = "usb:0"\n[phap]\ntoken = "t"\n[voice]\ntts = "espeak"\n', "voice.tts"),
+        ('[device]\ntransport = "usb:0"\n[phap]\ntoken = "t"\n[policy]\noutbound = "some"\n', "policy.outbound"),
     ],
 )
 def test_rejects_invalid_configs(tmp_path: Path, text: str, problem: str):

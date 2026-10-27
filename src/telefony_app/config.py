@@ -47,6 +47,9 @@ def parse_config(raw: dict) -> Config:
     fallback = policy.get("fallback_policy", "ring")
     if fallback not in ("ring", "reject"):
         raise ConfigError(f"policy.fallback_policy must be ring or reject, not {fallback!r}")
+    outbound = policy.get("outbound", "allowlist")
+    if outbound not in ("allowlist", "all"):
+        raise ConfigError(f"policy.outbound must be allowlist or all, not {outbound!r}")
     tts = voice.get("tts", "auto")
     if tts not in TTS_BACKENDS:
         raise ConfigError(f"voice.tts must be one of {', '.join(TTS_BACKENDS)}, not {tts!r}")
@@ -66,6 +69,7 @@ def parse_config(raw: dict) -> Config:
             fallback_policy=fallback,
             ring_timeout_s=_number(policy, "ring_timeout_s", 15, float, "policy"),
             country_code=policy.get("country_code", "+61"),
+            outbound=outbound,
         ),
         host=host,
         port=port,

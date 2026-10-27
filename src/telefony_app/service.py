@@ -10,6 +10,7 @@ from typing import Any, Literal
 
 from telefony_app.allowlist import is_allowed
 from telefony_app.bt import contacts as contact_book
+from telefony_app.bt.dialing import normalize_number
 from telefony_app.events import EventLog
 from telefony_app.phone import LinkDown, Phone, PhoneError
 
@@ -40,6 +41,7 @@ class Policy:
     fallback_policy: Literal["ring", "reject"] = "ring"
     ring_timeout_s: float = 15
     country_code: str = "+61"  # how national numbers (0..) are read when matching the allowlist
+    outbound: Literal["allowlist", "all"] = "allowlist"  # all: the controller alone decides who is called or texted
 
 
 @dataclass
@@ -174,7 +176,7 @@ class PhoneService:
     # --- SMS and contacts ---
 
     async def sms_send(self, number: str, text: str) -> str:
-        if not is_allowed(number, self.policy.allowlist, self.policy.country_code):
+        if not self._may_reach(number):
             raise PhapError(NOT_ALLOWED, "not_allowed")
         self._ready()
         return await self._phone(self.phone.sms_send(number, text))
@@ -294,9 +296,19 @@ class PhoneService:
                 raise PhapError(INVALID_PARAMS, "invalid params", {"detail": str(missing)}) from None
         if number is None:
             raise PhapError(INVALID_PARAMS, "invalid params", {"detail": "number or contact is required"})
-        if not is_allowed(number, self.policy.allowlist, self.policy.country_code):
+        if not self._may_reach(number):
             raise PhapError(NOT_ALLOWED, "not_allowed")
         return number
+
+    def _may_reach(self, number: str) -> bool:
+        """Outbound filter. Even with outbound = all, only well-formed numbers pass: nothing that could carry AT syntax."""
+        if self.policy.outbound == "all":
+            try:
+                normalize_number(number)
+            except ValueError:
+                return False
+            return True
+        return is_allowed(number, self.policy.allowlist, self.policy.country_code)
 
     def _ready(self) -> None:
         if not self.phone.link_up or self.engine != "ready":

@@ -116,6 +116,29 @@ async def test_conference_to_blocked_number_is_not_allowed(connect, phone: FakeP
     assert ("consult", BLOCKED) not in phone.commands
 
 
+@pytest.mark.parametrize(
+    "method,params,command",
+    [
+        ("call.dial", {"number": BLOCKED}, ("dial", BLOCKED)),
+        ("sms.send", {"number": BLOCKED, "text": "hi"}, ("sms_send", BLOCKED, "hi")),
+    ],
+)
+async def test_outbound_all_lets_the_controller_reach_any_number(connect, phone: FakePhone, policy, method, params, command):
+    policy.outbound = "all"
+    client = await connect()
+    await client.hello()
+    assert "result" in await client.request(method, params)
+    assert command in phone.commands
+
+
+async def test_outbound_all_still_refuses_numbers_that_could_inject_commands(connect, phone: FakePhone, policy):
+    policy.outbound = "all"
+    client = await connect()
+    await client.hello()
+    assert (await client.request("call.dial", {"number": "123;ATH"}))["error"]["code"] == 1001
+    assert phone.commands == []
+
+
 async def test_allowlist_matches_national_and_international_forms(connect, phone: FakePhone):
     client = await connect()
     await client.hello()

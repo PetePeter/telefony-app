@@ -69,6 +69,8 @@
         <label><span>Country code</span><input name="policy.country_code"></label>
         <label><span>Unanswered ringing</span><select name="policy.fallback_policy"><option>ring</option><option>reject</option></select></label>
         <label><span>Ring timeout (s)</span><input name="policy.ring_timeout_s" type="number" min="1" step="any"></label>
+        <label><span>Outbound calls and SMS</span><select name="policy.outbound"><option value="allowlist">allowlist only</option><option value="all">any number (controller decides)</option></select></label>
+        <div class="note bad" id="outbound-warning" hidden>Any number: the allowlist no longer limits who agents can call or text. A caller or SMS that tricks an agent could make it call or text anyone.</div>
       </section>
       <section class="panel">
         <h2>Device, PhAP, voice, web <span class="muted">— apply on restart</span></h2>
@@ -141,14 +143,18 @@ $("#login-form").addEventListener("submit", async (e) => {
   } catch { $("#login-error").hidden = false; }
 });
 
+const outbound = () => document.querySelector("[name='policy.outbound']");
+const warnOutbound = () => { $("#outbound-warning").hidden = outbound().value !== "all"; };
+outbound().addEventListener("change", warnOutbound);
 async function loadConfig() {
   const config = await api("GET", "/api/config");
   for (const field of $("#config-form").elements) {
     if (!field.name) continue;
     const [section, key] = field.name.split(".");
     const value = config[section]?.[key];
-    field.value = Array.isArray(value) ? value.join("\n") : value ?? "";
+    field.value = Array.isArray(value) ? value.join("\n") : value ?? (key === "outbound" ? "allowlist" : "");
   }
+  warnOutbound();
 }
 $("#config-form").addEventListener("submit", async (e) => {
   e.preventDefault();
