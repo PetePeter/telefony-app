@@ -201,6 +201,11 @@ class PhoneService:
         found = contact_book.search(await self._phone(self.phone.contacts()), query)
         return [_contact(c) for c in found]
 
+    async def call_history(self, limit: int = 20) -> list[dict]:
+        self._ready()
+        calls = await self._phone(self.phone.call_log(limit))
+        return [{"direction": c.direction, "number": c.number, "ts": c.ts} | ({"name": c.name} if c.name else {}) for c in calls]
+
     def transcript(self, call_id: str) -> list[dict]:
         return list(self._call(call_id).transcript)
 

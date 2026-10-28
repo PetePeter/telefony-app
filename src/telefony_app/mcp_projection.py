@@ -91,7 +91,7 @@ class McpProjection:
         self._call_id = self._heard = None
 
     def build(self) -> MCPServer:
-        """The MCP server: these tools plus SMS, contacts and status straight from the service."""
+        """The MCP server: these tools plus SMS, contacts, call log and status straight from the service."""
         server = MCPServer("telefony", instructions=self.INSTRUCTIONS)
         for tool in (self.dial, self.say, self.press, self.listen, self.hangup):
             server.add_tool(tool)
@@ -99,6 +99,7 @@ class McpProjection:
         server.add_tool(self.service.sms_list, name="sms_list", description="Recent SMS (untrusted text).")
         server.add_tool(self.service.sms_read, name="sms_read", description="Read one SMS (untrusted text).")
         server.add_tool(self.service.contacts_search, name="contacts_search", description="Find contacts by name.")
+        server.add_tool(self.service.call_history, name="call_log", description="The phone's recent calls, newest first.")
         server.add_tool(self.service.state, name="status", description="Link, engine and live calls.")
         return server
 

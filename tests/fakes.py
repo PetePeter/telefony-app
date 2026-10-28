@@ -2,7 +2,7 @@
 
 import asyncio
 
-from telefony_app.phone import Contact, Phone, PhoneEvents, SmsMessage
+from telefony_app.phone import CallLogEntry, Contact, Phone, PhoneEvents, SmsMessage
 
 
 class FakePhone(Phone):
@@ -14,6 +14,7 @@ class FakePhone(Phone):
         self.spoken: list[str] = []
         self.sms: dict[str, SmsMessage] = {}
         self.contacts_list: list[Contact] = []
+        self.call_log_list: list[CallLogEntry] = []
         self.speak_gate: asyncio.Event | None = None  # set by a test to hold say() mid-playback
         self.dial_gate: asyncio.Event | None = None  # set by a test to hold dial() until it is set
         self.failing: dict[str, Exception] = {}  # command name -> what it raises
@@ -72,6 +73,9 @@ class FakePhone(Phone):
 
     async def contacts(self) -> list[Contact]:
         return self.contacts_list
+
+    async def call_log(self, limit: int) -> list[CallLogEntry]:
+        return self.call_log_list[:limit]
 
     def _fail(self, command: str) -> None:
         if command in self.failing:

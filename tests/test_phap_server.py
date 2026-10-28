@@ -307,6 +307,25 @@ async def test_resume_from_evicted_seq_reports_gap(connect_with_buffer, phone: F
     assert welcome["gap"] is True
 
 
+# --- call history ---
+
+
+async def test_call_history_lists_the_phone_log_up_to_limit(connect, phone: FakePhone):
+    from telefony_app.phone import CallLogEntry
+
+    phone.call_log_list = [
+        CallLogEntry("missed", ALLOWED, "Oliver", "2026-10-28T19:45:00+11:00"),
+        CallLogEntry("received", "withheld", None, "2026-10-28T12:00:00+11:00"),
+    ]
+    client = await connect()
+    await client.hello(role="observer")
+    reply = await client.request("call.history", {"limit": 1})
+    assert_compliant(reply["result"], "CallHistoryResult")
+    assert reply["result"]["calls"] == [
+        {"direction": "missed", "number": ALLOWED, "name": "Oliver", "ts": "2026-10-28T19:45:00+11:00"}
+    ]
+
+
 # --- SMS and untrusted content ---
 
 

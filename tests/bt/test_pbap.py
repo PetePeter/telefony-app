@@ -6,7 +6,7 @@ from bumble.link import LocalLink
 
 from tests.bt.fake_phone import make_device, serve_obex
 from telefony_app.bt import obex
-from telefony_app.bt.pbap import PBAP_TARGET, VCARD_30, pull_contacts
+from telefony_app.bt.pbap import PBAP_TARGET, VCARD_30, pull_call_log, pull_contacts
 
 VCARDS = "".join(
     f"BEGIN:VCARD\r\nVERSION:3.0\r\nFN:Contact {i}\r\nTEL;TYPE=CELL:02555000{i:02d}\r\nEND:VCARD\r\n" for i in range(60)
@@ -36,3 +36,21 @@ async def test_pulls_whole_phonebook_across_continue_packets():
     assert first_get.header(obex.NAME) == "telecom/pb.vcf" and first_get.header(obex.APP_PARAMETERS) == VCARD_30
     assert len(more_gets) >= 2 and all(g.header(obex.CONNECTION_ID) == 1 for g in more_gets)
     assert disconnect.code == obex.DISCONNECT
+
+
+async def test_pulls_combined_call_history_newest_first_up_to_limit():
+    def history(request: obex.Packet) -> obex.Packet:
+        card = "BEGIN:VCARD\r\nVERSION:3.0\r\nTEL:0491570157\r\nX-IRMC-CALL-DATETIME;MISSED:20261028T194500\r\nEND:VCARD\r\n"
+        return obex.Packet(obex.SUCCESS, [(obex.END_OF_BODY, card.encode())])
+
+    link = LocalLink()
+    us, phone = await make_device(link, "F0:F1:F2:F3:F4:F5"), await make_device(link, "0C:51:01:73:71:27")
+    requests = serve_obex(phone, core.BT_PHONEBOOK_ACCESS_PSE_SERVICE, history)
+
+    connection = await us.connect(phone.public_address, transport=PhysicalTransport.BR_EDR)
+    calls = await pull_call_log(connection, limit=5)
+
+    assert [(c.direction, c.number) for c in calls] == [("missed", "0491570157")]
+    get = requests[1]
+    assert get.header(obex.NAME) == "telecom/cch.vcf"
+    assert get.header(obex.APP_PARAMETERS) == VCARD_30 + bytes([0x04, 0x02, 0x00, 0x05])  # MaxListCount = 5

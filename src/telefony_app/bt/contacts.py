@@ -23,7 +23,12 @@ class Ambiguous(Exception):
         self.candidates = candidates
 
 
-def _value(params: list[str], raw: str) -> str:
+def unfold(text: str) -> str:
+    """Join folded and quoted-printable soft-broken vCard lines."""
+    return _QP_SOFT_BREAK.sub("", _FOLD.sub("", text))
+
+
+def value(params: list[str], raw: str) -> str:
     upper = [p.upper() for p in params]
     if "ENCODING=QUOTED-PRINTABLE" in upper or "QUOTED-PRINTABLE" in upper:
         charset = next((p.split("=", 1)[1] for p in params if p.upper().startswith("CHARSET=")), "utf-8")
@@ -40,7 +45,7 @@ def _tel_type(params: list[str]) -> str:
 
 
 def parse_vcards(text: str) -> list[Contact]:
-    text = _QP_SOFT_BREAK.sub("", _FOLD.sub("", text))
+    text = unfold(text)
     contacts: list[Contact] = []
     current: Contact | None = None
     structured = ""
@@ -55,13 +60,13 @@ def parse_vcards(text: str) -> list[Contact]:
         elif current is None:
             continue
         elif prop == "FN":
-            current.name = _value(params, raw).strip()
+            current.name = value(params, raw).strip()
         elif prop == "N":
-            last, first, *_ = _value(params, raw).split(";") + ["", ""]
+            last, first, *_ = value(params, raw).split(";") + ["", ""]
             structured = f"{first} {last}".strip()
         elif prop == "TEL":
             try:
-                current.numbers.append((_tel_type(params), normalize_number(_value(params, raw))))
+                current.numbers.append((_tel_type(params), normalize_number(value(params, raw))))
             except ValueError:
                 pass  # not dialable (e.g. a URI); skip it
         elif prop == "END":

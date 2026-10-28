@@ -313,6 +313,33 @@
         "numbers"
       ]
     },
+    "CallLogEntry": {
+      "type": "object",
+      "properties": {
+        "direction": {
+          "enum": [
+            "missed",
+            "received",
+            "dialed"
+          ]
+        },
+        "number": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "ts": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "direction",
+        "number",
+        "ts"
+      ]
+    },
     "TranscriptEntry": {
       "type": "object",
       "properties": {
@@ -1066,6 +1093,51 @@
         }
       ]
     },
+    "CallHistoryParams": {
+      "type": "object",
+      "properties": {
+        "limit": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "CallHistoryResult": {
+      "type": "object",
+      "properties": {
+        "calls": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CallLogEntry"
+          }
+        }
+      },
+      "required": [
+        "calls"
+      ]
+    },
+    "CallHistoryRequest": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/JSONRPCRequest"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "method": {
+              "const": "call.history"
+            },
+            "params": {
+              "$ref": "#/$defs/CallHistoryParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ]
+        }
+      ]
+    },
     "TranscriptGetParams": {
       "type": "object",
       "properties": {
@@ -1271,6 +1343,9 @@
         },
         {
           "$ref": "#/$defs/ContactsSearchRequest"
+        },
+        {
+          "$ref": "#/$defs/CallHistoryRequest"
         },
         {
           "$ref": "#/$defs/TranscriptGetRequest"

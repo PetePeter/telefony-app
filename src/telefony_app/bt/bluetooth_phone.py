@@ -1,4 +1,4 @@
-"""The Phone port over Bluetooth: HFP call control and SCO audio (HfLine), PBAP contacts, MAP SMS."""
+"""The Phone port over Bluetooth: HFP call control and SCO audio (HfLine), PBAP contacts and call log, MAP SMS."""
 
 import asyncio
 import contextlib
@@ -13,8 +13,8 @@ from telefony_app.bt.call_state import CallEnded, CallState
 from telefony_app.bt.dialing import normalize_number
 from telefony_app.bt.hf_line import HfLine, LinkLost
 from telefony_app.bt.map_client import map_session
-from telefony_app.bt.pbap import pull_contacts
-from telefony_app.phone import Contact, LinkDown, Phone, PhoneError, PhoneEvents, SmsMessage
+from telefony_app.bt.pbap import pull_call_log, pull_contacts
+from telefony_app.phone import CallLogEntry, Contact, LinkDown, Phone, PhoneError, PhoneEvents, SmsMessage
 from telefony_app.voice import Tts, WhisperStt
 
 log = logging.getLogger(__name__)
@@ -105,6 +105,9 @@ class BluetoothPhone(Phone):
         if self._contacts is None:
             self._contacts = await pull_contacts(self._connection, self.dlc.multiplexer)
         return self._contacts or []
+
+    async def call_log(self, limit: int) -> list[CallLogEntry]:
+        return await pull_call_log(self._connection, self.dlc.multiplexer, limit)
 
     @contextlib.asynccontextmanager
     async def _map(self):

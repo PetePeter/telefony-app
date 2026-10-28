@@ -4,9 +4,10 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Protocol
 
+from telefony_app.bt.call_log import CallLogEntry
 from telefony_app.bt.contacts import Contact
 
-__all__ = ["Contact", "LinkDown", "Phone", "PhoneError", "PhoneEvents", "SmsMessage"]
+__all__ = ["CallLogEntry", "Contact", "LinkDown", "Phone", "PhoneError", "PhoneEvents", "SmsMessage"]
 
 
 class PhoneError(Exception):
@@ -92,3 +93,6 @@ class Phone(ABC):
 
     @abstractmethod
     async def contacts(self) -> list[Contact]: ...
+
+    @abstractmethod
+    async def call_log(self, limit: int) -> list[CallLogEntry]: ...
