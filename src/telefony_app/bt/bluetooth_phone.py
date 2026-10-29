@@ -23,17 +23,32 @@ _UTTERANCE_MAX_S = 30.0
 
 class BluetoothPhone(Phone):
     def __init__(self, line: HfLine, dlc: rfcomm.DLC, tts: Tts | None, stt: WhisperStt | None) -> None:
-        self.line, self.dlc, self.tts, self.stt = line, dlc, tts, stt
+        self.tts, self.stt = tts, stt
         self.tts_available, self.stt_available = tts is not None, stt is not None
-        self.link_up = True
         self.events: PhoneEvents | None = None
+        self.link_down = asyncio.Event()  # set while there is no link; main waits on it to reconnect
         self._hung_up = False
         self._ringing = False  # the current call came in rather than going out
         self._tasks: dict[str, asyncio.Task] = {}
-        self._contacts: list[Contact] | None = None
+        self._bind(line, dlc)
+
+    def _bind(self, line: HfLine, dlc: rfcomm.DLC) -> None:
+        self.line, self.dlc = line, dlc
+        self.link_up = True
+        self.link_down.clear()
+        self._contacts: list[Contact] | None = None  # the phone may have changed them while we were away
         line.on_note = self._on_note
         line.pump.on_dtmf = self._on_dtmf
-        self._connection.on(Connection.EVENT_DISCONNECTION, self._on_disconnect)
+        connection = self._connection
+        connection.on(Connection.EVENT_DISCONNECTION, lambda reason: self._on_disconnect(connection))
+
+    def relink(self, line: HfLine, dlc: rfcomm.DLC) -> None:
+        """Carry on over a new HFP line after the old link dropped."""
+        self.line.stop()
+        self._bind(line, dlc)
+        if self.events:
+            self.events.link(True)
+            self._watch_incoming()
 
     @property
     def _connection(self) -> Connection:
@@ -140,8 +155,11 @@ class BluetoothPhone(Phone):
         if self.events:
             self.events.dtmf(digit)
 
-    def _on_disconnect(self, reason: int) -> None:
+    def _on_disconnect(self, connection: Connection) -> None:
+        if connection is not self._connection:  # a link we already replaced
+            return
         self.link_up = False
+        self.link_down.set()
         for name in list(self._tasks):
             self._stop(name)
         if self.events:

@@ -75,7 +75,7 @@ The tests drive the real `PhoneService` and PhAP server over a real WebSocket, w
 
 - One phone, one conference.
 - No barge-in. While the app is speaking, the caller's speech is not transcribed.
-- If the Bluetooth link drops, the app reports `link: down`. Restart it to reconnect.
+- If the Bluetooth link drops, the app reports `link: down`, keeps trying to reconnect to the phone every ~5 s (and accepts the phone reconnecting to it), then reports `link: up`. No restart needed.
 - Tested on an iPhone: outgoing and incoming calls, speech both ways, the call agent. Conference and SMS through the agent are covered by tests, not yet live.
 
 ## License

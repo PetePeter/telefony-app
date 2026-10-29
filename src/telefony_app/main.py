@@ -9,6 +9,7 @@ import asyncio
 import contextlib
 import logging
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 from bumble import hci, hfp, rfcomm
@@ -32,12 +33,15 @@ from telefony_app.web.app import WebApp
 HANDS_FREE_CLASS_OF_DEVICE = 0x200408
 NO_DONGLE_EXIT = 3  # with the stderr line "telefony-app: dongle not found", which Helm matches
 SDP_HANDLE, MNS_SDP_HANDLE = 0x00010001, 0x00010002
+RECONNECT_PAUSE_S = 5.0
 log = logging.getLogger("telefony_app")
+LineQueue = asyncio.Queue[tuple[HfLine, rfcomm.DLC]]
 
 
-async def connect_phone(device: Device) -> tuple[HfLine, rfcomm.DLC]:
-    """Advertise as a hands-free unit and wait for the bonded phone (or a new pairing) to bring up HFP."""
-    connected: asyncio.Queue[tuple[HfLine, rfcomm.DLC]] = asyncio.Queue()
+async def listen_for_phone(device: Device) -> tuple[LineQueue, Callable[[rfcomm.DLC], None]]:
+    """Advertise as a hands-free unit and page the bonded phone. Every HFP line that comes up, now or after a drop,
+    lands in the queue; the callback brings up a channel we opened ourselves."""
+    connected: LineQueue = asyncio.Queue()
     bring_ups: set[asyncio.Task] = set()
 
     async def bring_up(dlc: rfcomm.DLC) -> None:
@@ -69,7 +73,31 @@ async def connect_phone(device: Device) -> tuple[HfLine, rfcomm.DLC]:
         on_dlc(dlc)
     else:
         log.info("discoverable as 'telefony'; pair it from the phone's Bluetooth settings")
-    return await connected.get()
+    return connected, on_dlc
+
+
+async def keep_linked(device: Device, phone: BluetoothPhone, connected: LineQueue, on_dlc: Callable[[rfcomm.DLC], None]) -> None:
+    """Whenever the link drops, page the bonded phone until a new line is up (from us or the phone), then relink."""
+    while True:
+        await phone.link_down.wait()
+        log.info("phone link lost; reconnecting")
+        pager = asyncio.create_task(_page_until_back(device, on_dlc))
+        try:
+            line, dlc = await connected.get()
+            while dlc.multiplexer.l2cap_channel.connection not in device.connections.values():  # stale, from an old link
+                line, dlc = await connected.get()
+        finally:
+            pager.cancel()
+        phone.relink(line, dlc)
+        log.info("phone reconnected")
+
+
+async def _page_until_back(device: Device, on_dlc: Callable[[rfcomm.DLC], None]) -> None:
+    """Runs until cancelled: if bringing up a channel fails, the link drops and we page again."""
+    while True:
+        if not device.connections and (dlc := await connect_bonded_phone(device)):
+            on_dlc(dlc)
+        await asyncio.sleep(RECONNECT_PAUSE_S)
 
 
 async def run(config: Config, config_path: Path, mcp: bool) -> None:
@@ -92,9 +120,13 @@ async def run(config: Config, config_path: Path, mcp: bool) -> None:
                 web = WebApp(config_path, config, keystore=lambda: device.keystore)
                 port = await stack.enter_async_context(web.serve())
                 log.info("web UI on http://%s:%d/", config.web_host, port)
-            line, dlc = await connect_phone(device)
+            connected, on_dlc = await listen_for_phone(device)
+            line, dlc = await connected.get()
             log.info("phone connected")
-            service = PhoneService(BluetoothPhone(line, dlc, tts, stt), config.policy, config.event_buffer)
+            phone = BluetoothPhone(line, dlc, tts, stt)
+            service = PhoneService(phone, config.policy, config.event_buffer)
+            relinker = asyncio.create_task(keep_linked(device, phone, connected, on_dlc))
+            stack.callback(relinker.cancel)
             if web:
                 web.service = service
             if mcp:
