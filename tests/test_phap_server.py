@@ -503,3 +503,38 @@ async def test_refused_consult_keeps_the_first_call_active(connect, phone: FakeP
     assert [(c["callId"], c["state"]) for c in calls] == [(first, "active")]
     phone.remote_hangs_up()
     assert (await client.request("status"))["result"]["state"]["calls"] == []
+
+
+async def test_transcript_stays_readable_after_the_call_ends(connect, phone: FakePhone):
+    client = await connect()
+    await client.hello()
+    call_id = (await client.request("call.dial", {"number": ALLOWED}))["result"]["callId"]
+    phone.remote_answers()
+    phone.caller_says("bye")
+    phone.remote_hangs_up()
+    reply = await client.request("transcript.get", {"callId": call_id})
+    assert [u["text"] for u in reply["result"]["utterances"]] == ["bye"]
+
+
+async def test_transcript_of_an_unknown_call_is_no_such_call(connect):
+    client = await connect()
+    await client.hello()
+    assert (await client.request("transcript.get", {"callId": "nope"}))["error"]["code"] == 1003
+
+
+async def test_say_cut_off_by_the_call_ending_is_dropped_quietly(connect, phone: FakePhone, caplog):
+    client = await connect()
+    await client.hello()
+    call_id = (await client.request("call.dial", {"number": ALLOWED}))["result"]["callId"]
+    phone.remote_answers()
+    phone.speak_gate = asyncio.Event()
+    phone.failing["speak"] = PhoneError("TimeoutError")  # what playback raises once the audio link is gone
+    await client.request("call.say", {"callId": call_id, "text": "one"})
+    await client.request("call.say", {"callId": call_id, "text": "two"})
+    await asyncio.sleep(0.05)
+    phone.remote_hangs_up()
+    phone.speak_gate.set()
+    await asyncio.sleep(0.05)
+    assert [c for c in phone.commands if c[0] == "speak"] == [("speak", "one")]  # "two" never played
+    assert "Traceback" not in caplog.text and "failed" not in caplog.text
+    assert not [e for e in client.events if e["type"] == "call.spoken"]

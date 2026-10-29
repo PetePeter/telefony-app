@@ -144,6 +144,8 @@ class PhoneService:
             try:
                 await self.phone.speak(text)
             except Exception as failed:
+                if call.state == "ended":  # the audio link went with the call
+                    return "call ended"
                 log.exception("say %s failed", say_id)
                 return str(failed) or type(failed).__name__
             call.transcript.append({"speaker": "local", "text": text, "startMs": 0, "endMs": 0})
@@ -207,7 +209,10 @@ class PhoneService:
         return [{"direction": c.direction, "number": c.number, "ts": c.ts} | ({"name": c.name} if c.name else {}) for c in calls]
 
     def transcript(self, call_id: str) -> list[dict]:
-        return list(self._call(call_id).transcript)
+        """Ended calls stay readable; calls are only forgotten when the app restarts."""
+        if call_id not in self.calls:
+            raise PhapError(NO_SUCH_CALL, "no_such_call")
+        return list(self.calls[call_id].transcript)
 
     # --- engine ---
 

@@ -89,6 +89,7 @@ class HfLine:
 
     async def dial(self, number: str) -> None:
         self.tracker.begin_call()
+        log.info("ATD %s (placed by telefony)", number)  # any other outgoing leg was started on the phone itself
         self._note(f"dialed {number}")
         # Real phones may only reply OK once the network has set the call up, so never time out here;
         # callers bound the whole dial-to-answer wait instead.
