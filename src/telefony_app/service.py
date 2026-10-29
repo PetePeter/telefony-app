@@ -12,7 +12,7 @@ from telefony_app.allowlist import is_allowed
 from telefony_app.bt import contacts as contact_book
 from telefony_app.bt.dialing import normalize_number
 from telefony_app.events import EventLog
-from telefony_app.phone import LinkDown, Phone, PhoneError
+from telefony_app.phone import LinkDown, Phone, PhoneError, validate_recording_id
 
 log = logging.getLogger(__name__)
 
@@ -91,18 +91,20 @@ class PhoneService:
 
     # --- calls ---
 
-    async def dial(self, number: str | None = None, contact: str | None = None) -> str:
+    async def dial(self, number: str | None = None, contact: str | None = None, recording_id: object = None) -> str:
+        recording_id = _recording_id(recording_id)
         number = await self._reachable(number, contact)
         self._ready()
         if any(c.state != "ended" for c in self.calls.values()):
             raise PhapError(BUSY, "busy", {"detail": "a call is already up; use conference.create"})
         call = self._new_call(number, "outbound", "dialing")
-        await self._failing(call, self.phone.dial(number))
+        await self._failing(call, self.phone.dial(number, recording_id))
         return call.call_id
 
-    async def answer(self, call_id: str) -> None:
+    async def answer(self, call_id: str, recording_id: object = None) -> None:
+        recording_id = _recording_id(recording_id)
         call = self._call(call_id, "ringing")
-        await self._phone(self.phone.answer())
+        await self._phone(self.phone.answer(recording_id))
         self._set_state(call, "active")
 
     async def reject(self, call_id: str) -> None:
@@ -374,6 +376,13 @@ class PhoneService:
 def _summary(handle: str, number: str, name: str | None, text: str) -> dict:
     summary = {"handle": handle, "number": number, "preview": text[:PREVIEW_LENGTH]}
     return summary | ({"name": name} if name else {})
+
+
+def _recording_id(value: object) -> str | None:
+    try:
+        return validate_recording_id(value)
+    except ValueError:
+        raise PhapError(INVALID_PARAMS, "invalid params", {"detail": "recordingId is invalid"}) from None
 
 
 def _contact(contact: contact_book.Contact) -> dict:

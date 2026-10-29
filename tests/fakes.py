@@ -22,14 +22,14 @@ class FakePhone(Phone):
     def attach(self, events: PhoneEvents) -> None:
         self.events = events
 
-    async def dial(self, number: str) -> None:
-        self.commands.append(("dial", number))
+    async def dial(self, number: str, recording_id: str | None = None) -> None:
+        self.commands.append(("dial", number) if recording_id is None else ("dial", number, recording_id))
         if self.dial_gate:
             await self.dial_gate.wait()
         self._fail("dial")
 
-    async def answer(self) -> None:
-        self.commands.append(("answer",))
+    async def answer(self, recording_id: str | None = None) -> None:
+        self.commands.append(("answer",) if recording_id is None else ("answer", recording_id))
 
     async def reject(self) -> None:
         self.commands.append(("reject",))

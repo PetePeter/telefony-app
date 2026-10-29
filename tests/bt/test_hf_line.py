@@ -1,10 +1,16 @@
 """HfLine against Bumble's real Audio Gateway (phone side) over an in-memory Bluetooth link."""
 
 import asyncio
+import wave
+from types import SimpleNamespace
+from typing import cast
 
+import numpy as np
 import pytest
 from bumble import hfp, rfcomm
+from bumble.device import ScoLink
 from bumble.testing.test_utils import TwoDevices
+from bumble.hci import HCI_SynchronousDataPacket
 
 from telefony_app.bt.call_state import CallEnded, CallState
 from telefony_app.bt.hf_line import HF_CONFIGURATION, ConsultFailed, HfLine, LinkLost
@@ -26,7 +32,11 @@ AG_CONFIGURATION = hfp.AgConfiguration(
 )
 
 
-async def connect(ag_configuration: hfp.AgConfiguration = AG_CONFIGURATION, clip_supported: bool = True) -> tuple[hfp.AgProtocol, HfLine]:
+async def connect(
+    ag_configuration: hfp.AgConfiguration = AG_CONFIGURATION,
+    clip_supported: bool = True,
+    recording_directory=None,
+) -> tuple[hfp.AgProtocol, HfLine]:
     devices = TwoDevices()
     await devices.setup_connection()
     dlc_future = asyncio.get_running_loop().create_future()
@@ -38,7 +48,7 @@ async def connect(ag_configuration: hfp.AgConfiguration = AG_CONFIGURATION, clip
         ag._on_clip = lambda enabled: ag.send_error()
     slc = asyncio.get_running_loop().create_future()
     ag.once(ag.EVENT_SLC_COMPLETE, lambda: slc.set_result(None))
-    line = HfLine(hfp.HfProtocol(hf_dlc, HF_CONFIGURATION))
+    line = HfLine(hfp.HfProtocol(hf_dlc, HF_CONFIGURATION), recording_directory=recording_directory)
     await asyncio.wait_for(line.start(), 2)  # returns only once the SLC is up
     assert slc.done()
     return ag, line
@@ -68,6 +78,97 @@ async def test_phone_rejecting_caller_id_still_connects_and_reports_caller_via_c
         await asyncio.sleep(0.05)
         ag.update_ag_indicator(hfp.AgIndicator.CALL_SETUP, 1)
         assert await asyncio.wait_for(incoming, 10) == "0491570157"
+    finally:
+        line.stop()
+
+
+async def test_active_call_records_at_the_audio_pump_and_finalizes_normally(tmp_path):
+    _, line = await connect(recording_directory=tmp_path)
+    try:
+        line.set_recording_id("active")
+        line._on_state(CallState.ACTIVE)
+        line.pump.queue_uplink(np.array([8, 9], dtype=np.int16))
+        line.pump.on_packet(np.array([1, 2], dtype=np.int16).tobytes(), HCI_SynchronousDataPacket.Status.CORRECTLY_RECEIVED_DATA)
+        line._on_state(CallState.ENDED)
+
+        with wave.open(str(tmp_path / "active.wav"), "rb") as wav:
+            assert wav.getparams()[:3] == (2, 2, 8000)
+            assert np.frombuffer(wav.readframes(2), dtype="<i2").reshape(-1, 2).tolist() == [[1, 8], [2, 9]]
+    finally:
+        line.stop()
+
+
+async def test_sco_disconnect_finalizes_partial_and_reports_link_lost(tmp_path):
+    class Link:
+        def __init__(self):
+            self.device = SimpleNamespace(host=SimpleNamespace(send_sco_sdu=lambda **kwargs: None))
+            self.handlers = {}
+            self.sink = None
+
+        def on(self, event, callback):
+            self.handlers[event] = callback
+
+    _, line = await connect(recording_directory=tmp_path)
+    lost = []
+    line.on_audio_link_lost = lambda: lost.append(True)
+    line.set_recording_id("partial")
+    line.tracker.state = CallState.ACTIVE
+    line._on_state(CallState.ACTIVE)
+    link = Link()
+    line._on_sco_connection(cast(ScoLink, link))
+    line.pump.on_packet(np.array([3, 4], dtype=np.int16).tobytes(), HCI_SynchronousDataPacket.Status.CORRECTLY_RECEIVED_DATA)
+    link.handlers[ScoLink.EVENT_DISCONNECTION](0x13)
+
+    try:
+        assert lost == [True]
+        assert line.tracker.state is CallState.ENDED
+        with wave.open(str(tmp_path / "partial.wav"), "rb") as wav:
+            assert np.frombuffer(wav.readframes(2), dtype="<i2").reshape(-1, 2).tolist() == [[3, 0], [4, 0]]
+    finally:
+        line.stop()
+
+
+async def test_acl_disconnect_finalizes_partial_recording(tmp_path):
+    _, line = await connect(recording_directory=tmp_path)
+    line.set_recording_id("acl_partial")
+    line.tracker.state = CallState.ACTIVE
+    line._on_state(CallState.ACTIVE)
+    line.pump.on_packet(np.array([5], dtype=np.int16).tobytes(), HCI_SynchronousDataPacket.Status.CORRECTLY_RECEIVED_DATA)
+
+    try:
+        line._on_link_lost(0x13)
+        with wave.open(str(tmp_path / "acl_partial.wav"), "rb") as wav:
+            assert np.frombuffer(wav.readframes(1), dtype="<i2").reshape(-1, 2).tolist() == [[5, 0]]
+    finally:
+        line.stop()
+
+
+async def test_recording_start_failure_does_not_break_sco_audio(tmp_path):
+    existing_part = tmp_path / "collision.wav.part"
+    existing_part.write_bytes(b"preserve")
+    _, line = await connect(recording_directory=tmp_path)
+    try:
+        line.set_recording_id("collision")
+        line.tracker.state = CallState.ACTIVE
+        line._on_state(CallState.ACTIVE)
+        out = line.pump.on_packet(np.array([7], dtype=np.int16).tobytes(), HCI_SynchronousDataPacket.Status.CORRECTLY_RECEIVED_DATA)
+        assert out == bytes(2)
+        assert existing_part.read_bytes() == b"preserve"
+    finally:
+        line.stop()
+
+
+async def test_unanswered_or_unrecorded_call_does_not_create_a_recording(tmp_path):
+    _, line = await connect(recording_directory=tmp_path)
+    try:
+        line.set_recording_id("unanswered")
+        line._on_state(CallState.INCOMING)
+        line._on_state(CallState.ENDED)
+        line.set_recording_id(None)
+        line._on_state(CallState.ACTIVE)
+        line.pump.on_packet(np.array([1], dtype=np.int16).tobytes(), HCI_SynchronousDataPacket.Status.CORRECTLY_RECEIVED_DATA)
+        line._on_state(CallState.ENDED)
+        assert list(tmp_path.iterdir()) == []
     finally:
         line.stop()
 

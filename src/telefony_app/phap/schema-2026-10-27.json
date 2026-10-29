@@ -7,6 +7,12 @@
       "type": "string",
       "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
     },
+    "RecordingId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9_-]+$"
+    },
     "Implementation": {
       "type": "object",
       "properties": {
@@ -457,6 +463,9 @@
           "properties": {
             "number": {
               "type": "string"
+            },
+            "recordingId": {
+              "$ref": "#/$defs/RecordingId"
             }
           },
           "required": [
@@ -468,6 +477,9 @@
           "properties": {
             "contact": {
               "type": "string"
+            },
+            "recordingId": {
+              "$ref": "#/$defs/RecordingId"
             }
           },
           "required": [
@@ -481,6 +493,9 @@
       "properties": {
         "callId": {
           "type": "string"
+        },
+        "recordingId": {
+          "$ref": "#/$defs/RecordingId"
         }
       },
       "required": [
@@ -514,6 +529,9 @@
       "properties": {
         "callId": {
           "type": "string"
+        },
+        "recordingId": {
+          "$ref": "#/$defs/RecordingId"
         }
       },
       "required": [

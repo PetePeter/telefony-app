@@ -33,6 +33,7 @@ class Config:
     web_host: str = "127.0.0.1"
     web_port: int = 7782
     web_token: str | None = None  # no [web] admin_token: no web UI
+    recordings_directory: Path | None = None
 
 
 def load_config(path: Path) -> Config:
@@ -41,7 +42,7 @@ def load_config(path: Path) -> Config:
 
 
 def parse_config(raw: dict) -> Config:
-    device, policy, phap, voice, web = (raw.get(k, {}) for k in ("device", "policy", "phap", "voice", "web"))
+    device, policy, phap, voice, web, recordings = (raw.get(k, {}) for k in ("device", "policy", "phap", "voice", "web", "recordings"))
     transport = _required(device, "transport", "device.transport")
     token = _required(phap, "token", "phap.token")
     fallback = policy.get("fallback_policy", "ring")
@@ -61,6 +62,11 @@ def parse_config(raw: dict) -> Config:
             raise ConfigError(f"policy.allowlist: {number!r} is not a phone number") from None
     host, port = _loopback(phap.get("bind", "127.0.0.1:7781"), "phap.bind")
     web_host, web_port = _loopback(web.get("bind", "127.0.0.1:7782"), "web.bind")
+    recording_directory = recordings.get("directory")
+    if recording_directory is not None:
+        if not isinstance(recording_directory, str) or not Path(recording_directory).is_absolute():
+            raise ConfigError("recordings.directory must be an absolute path")
+        recording_directory = Path(recording_directory)
     return Config(
         transport=transport,
         token=token,
@@ -81,6 +87,7 @@ def parse_config(raw: dict) -> Config:
         web_host=web_host,
         web_port=web_port,
         web_token=web.get("admin_token") or None,
+        recordings_directory=recording_directory,
     )
 
 

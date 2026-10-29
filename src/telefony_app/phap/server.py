@@ -37,8 +37,8 @@ async def _sync(value: Any) -> Any:
 
 
 METHODS: dict[str, tuple[bool, Handler]] = {
-    "call.dial": _method(True, lambda s, p: s.dial(p.get("number"), p.get("contact"))),
-    "call.answer": _method(True, lambda s, p: s.answer(p["callId"])),
+    "call.dial": _method(True, lambda s, p: s.dial(p.get("number"), p.get("contact"), p.get("recordingId"))),
+    "call.answer": _method(True, lambda s, p: s.answer(p["callId"], p.get("recordingId"))),
     "call.reject": _method(True, lambda s, p: s.reject(p["callId"])),
     "call.hangup": _method(True, lambda s, p: s.hangup(p["callId"])),
     "call.hold": _method(True, lambda s, p: s.hold(p["callId"])),

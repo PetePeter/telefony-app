@@ -1,7 +1,9 @@
 import numpy as np
 from bumble.hci import HCI_SynchronousDataPacket
+from typing import cast
 
 from telefony_app.bt.audio import AudioPump, resample, shape_for_phone
+from telefony_app.bt.dtmf import DtmfDecoder
 
 Status = HCI_SynchronousDataPacket.Status
 GOOD = Status.CORRECTLY_RECEIVED_DATA
@@ -69,6 +71,24 @@ def test_downlink_keeps_flagged_but_present_data():
     pump.on_packet(packet(30, 6), Status.DATA_PARTIALLY_LOST)
     pcm = pump.take_downlink()
     assert (pcm[:30] == 5).all() and (pcm[30:] == 6).all()
+
+
+def test_recording_tap_pairs_raw_receive_with_actual_padded_transmit_frame():
+    class Filter:
+        def feed(self, pcm):
+            return [], np.zeros_like(pcm)
+
+    captured = []
+    pump = AudioPump(cast(DtmfDecoder, Filter()))
+    pump.on_recording_frame = lambda received, transmitted: captured.append((received.copy(), transmitted.copy()))
+    pump.queue_uplink(np.array([8], dtype=np.int16))
+    pump.on_packet(packet(2, 4), GOOD)
+    pump.on_packet(packet(2, 5), Status.NO_DATA)
+
+    assert captured[0][0].tolist() == [4, 4]
+    assert captured[0][1].tolist() == [8, 0]
+    assert captured[1][0].tolist() == [0, 0]
+    assert captured[1][1].tolist() == [0, 0]
 
 
 def gain_difference_db(hz_a: float, hz_b: float) -> float:

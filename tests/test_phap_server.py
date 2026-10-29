@@ -3,6 +3,7 @@
 import asyncio
 import json
 
+import jsonschema
 import pytest
 import websockets
 
@@ -165,6 +166,62 @@ async def test_outbound_call_lifecycle_events(connect, phone: FakePhone):
     assert (ended["state"], ended["reason"]) == ("ended", "remote")
 
 
+async def test_call_dial_passes_recording_id_to_phone(connect, phone: FakePhone):
+    client = await connect()
+    await client.hello()
+    reply = await client.request("call.dial", {"number": ALLOWED, "recordingId": "interaction_123"})
+    assert "result" in reply
+    assert phone.commands[0] == ("dial", ALLOWED, "interaction_123")
+
+
+@pytest.mark.parametrize("recording_id", ["../escape", "a/b", "é", "", "x" * 129, 42])
+async def test_call_dial_rejects_invalid_recording_id_without_calling_phone(connect, phone: FakePhone, recording_id):
+    client = await connect()
+    await client.hello()
+    reply = await client.request("call.dial", {"number": ALLOWED, "recordingId": recording_id})
+    assert reply["error"]["code"] == -32602
+    assert not phone.commands
+
+
+async def test_call_answer_passes_recording_id_to_phone(connect, phone: FakePhone):
+    client = await connect()
+    await client.hello()
+    phone.ring(ALLOWED)
+    call_id = (await client.event("call.ringing"))["callId"]
+    reply = await client.request("call.answer", {"callId": call_id, "recordingId": "interaction_answer"})
+    assert "result" in reply
+    assert ("answer", "interaction_answer") in phone.commands
+
+
+def test_call_answer_recording_id_matches_request_schema():
+    valid = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "call.answer",
+        "params": {"callId": "call-1", "recordingId": "interaction_answer"},
+    }
+    assert_compliant(valid, "CallAnswerRequest")
+
+    invalid = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "call.answer",
+        "params": {"callId": "call-1", "recordingId": "../escape"},
+    }
+    with pytest.raises(jsonschema.ValidationError):
+        assert_compliant(invalid, "CallAnswerRequest")
+
+
+async def test_call_answer_rejects_invalid_recording_id_without_answering(connect, phone: FakePhone):
+    client = await connect()
+    await client.hello()
+    phone.ring(ALLOWED)
+    call_id = (await client.event("call.ringing"))["callId"]
+    reply = await client.request("call.answer", {"callId": call_id, "recordingId": "../escape"})
+    assert reply["error"]["code"] == -32602
+    assert not phone.commands
+
+
 async def test_unknown_call_id(connect):
     client = await connect()
     await client.hello()
@@ -275,13 +332,14 @@ async def test_retried_request_id_does_not_dial_twice(connect, phone: FakePhone)
 async def test_call_survives_controller_disconnect(connect, phone: FakePhone):
     client = await connect()
     await client.hello()
-    call_id = (await client.request("call.dial", {"number": ALLOWED}))["result"]["callId"]
+    call_id = (await client.request("call.dial", {"number": ALLOWED, "recordingId": "interaction"}))["result"]["callId"]
     phone.remote_answers()
     await client.ws.close()
     observer = await connect()
     state = (await observer.hello(role="observer"))["result"]["state"]
     assert state["calls"] == [{"callId": call_id, "number": ALLOWED, "direction": "outbound", "state": "active"}]
     assert ("hangup",) not in phone.commands
+    assert phone.commands[0] == ("dial", ALLOWED, "interaction")
 
 
 async def test_resume_replays_missed_events(connect, phone: FakePhone):

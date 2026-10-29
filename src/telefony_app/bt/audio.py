@@ -40,6 +40,7 @@ class AudioPump:
         self._dtmf = dtmf  # takes key presses out of the downlink
         self.on_dtmf: Callable[[str], None] | None = None
         self.tap: Callable[[np.ndarray], None] | None = None  # sees all downlink audio, e.g. a transcript
+        self.on_recording_frame: Callable[[np.ndarray, np.ndarray], None] | None = None
 
     @property
     def uplink_pending(self) -> int:
@@ -53,6 +54,7 @@ class AudioPump:
         # Flagged packets still carry mostly-right audio; only NO_DATA is garbage.
         no_data = status == HCI_SynchronousDataPacket.Status.NO_DATA
         heard = np.zeros_like(received) if no_data else received.copy()
+        recording_receive = heard.copy()
         if self._dtmf:
             digits, heard = self._dtmf.feed(heard)
             for digit in digits:
@@ -65,6 +67,8 @@ class AudioPump:
         take = min(len(received), len(self._uplink))
         out[:take] = self._uplink[:take]
         self._uplink = self._uplink[take:]
+        if self.on_recording_frame:
+            self.on_recording_frame(recording_receive, out)
         return out.tobytes()
 
     def take_downlink(self) -> np.ndarray:

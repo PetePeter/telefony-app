@@ -2,12 +2,23 @@
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+import re
 from typing import Protocol
 
 from telefony_app.bt.call_log import CallLogEntry
 from telefony_app.bt.contacts import Contact
 
 __all__ = ["CallLogEntry", "Contact", "LinkDown", "Phone", "PhoneError", "PhoneEvents", "SmsMessage"]
+
+_RECORDING_ID = re.compile(r"[A-Za-z0-9_-]{1,128}\Z", re.ASCII)
+
+
+def validate_recording_id(recording_id: object) -> str | None:
+    if recording_id is None:
+        return None
+    if not isinstance(recording_id, str) or not _RECORDING_ID.fullmatch(recording_id):
+        raise ValueError("recordingId must be 1-128 ASCII letters, digits, underscores, or hyphens")
+    return recording_id
 
 
 class PhoneError(Exception):
@@ -49,10 +60,10 @@ class Phone(ABC):
     def attach(self, events: PhoneEvents) -> None: ...
 
     @abstractmethod
-    async def dial(self, number: str) -> None: ...
+    async def dial(self, number: str, recording_id: str | None = None) -> None: ...
 
     @abstractmethod
-    async def answer(self) -> None: ...
+    async def answer(self, recording_id: str | None = None) -> None: ...
 
     @abstractmethod
     async def reject(self) -> None: ...

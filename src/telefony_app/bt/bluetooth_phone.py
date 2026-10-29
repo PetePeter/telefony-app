@@ -38,6 +38,7 @@ class BluetoothPhone(Phone):
         self.link_down.clear()
         self._contacts: list[Contact] | None = None  # the phone may have changed them while we were away
         line.on_note = self._on_note
+        line.on_audio_link_lost = self._on_audio_link_lost
         line.pump.on_dtmf = self._on_dtmf
         connection = self._connection
         connection.on(Connection.EVENT_DISCONNECTION, lambda reason: self._on_disconnect(connection))
@@ -60,12 +61,14 @@ class BluetoothPhone(Phone):
 
     # --- calls ---
 
-    async def dial(self, number: str) -> None:
+    async def dial(self, number: str, recording_id: str | None = None) -> None:
         self._stop("incoming")
         self._hung_up = self._ringing = False
+        self.line.set_recording_id(recording_id)
         await self._at(self.line.dial, number)
 
-    async def answer(self) -> None:
+    async def answer(self, recording_id: str | None = None) -> None:
+        self.line.set_recording_id(recording_id)
         await self._at(self.line.answer())
 
     async def reject(self) -> None:
@@ -154,6 +157,11 @@ class BluetoothPhone(Phone):
     def _on_dtmf(self, digit: str) -> None:
         if self.events:
             self.events.dtmf(digit)
+
+    def _on_audio_link_lost(self) -> None:
+        self._stop("listen")
+        if self.events:
+            self.events.call_state("ended", "link_lost")
 
     def _on_disconnect(self, connection: Connection) -> None:
         if connection is not self._connection:  # a link we already replaced

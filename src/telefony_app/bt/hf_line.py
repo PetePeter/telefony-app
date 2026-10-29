@@ -5,6 +5,7 @@ import contextlib
 from collections.abc import Awaitable, Callable
 import math
 import logging
+from pathlib import Path
 
 import numpy as np
 from bumble import hci, hfp
@@ -13,7 +14,9 @@ from bumble.device import Connection, Device, ScoLink
 from telefony_app.bt.audio import STT_RATE, AudioPump, resample
 from telefony_app.bt.call_state import CallEnded, CallOutcome, CallState, CallTracker
 from telefony_app.bt.dtmf import DtmfDecoder
+from telefony_app.bt.recording import WavRecorder
 from telefony_app.bt.segmenter import Segmenter
+from telefony_app.phone import validate_recording_id
 
 _AUDIO_GRACE_SECONDS = 5.0  # time allowed for the phone to open the SCO link
 _CALLER_ID_SECONDS = 3.0  # +CLIP follows the first RING, shortly after callsetup=1
@@ -49,11 +52,16 @@ class LinkLost(Exception):
 
 
 class HfLine:
-    def __init__(self, protocol: hfp.HfProtocol) -> None:
+    def __init__(self, protocol: hfp.HfProtocol, recording_directory: Path | None = None) -> None:
         self.protocol = protocol
         self.tracker = CallTracker()
         self.rate = 8000
         self.pump = AudioPump(DtmfDecoder(self.rate))
+        self.recording_directory = recording_directory
+        self._recording_id: str | None = None
+        self._recorder: WavRecorder | None = None
+        self.pump.on_recording_frame = self._record_frame
+        self.on_audio_link_lost: Callable[[], None] | None = None
         self._changed = asyncio.Event()
         self._audio = asyncio.Event()
         self._task: asyncio.Task | None = None
@@ -122,6 +130,13 @@ class HfLine:
 
     async def answer(self) -> None:
         await self.protocol.answer_incoming_call()
+
+    @property
+    def recording_id(self) -> str | None:
+        return self._recording_id
+
+    def set_recording_id(self, recording_id: str | None) -> None:
+        self._recording_id = validate_recording_id(recording_id)
 
     async def reject(self) -> None:
         await self.protocol.reject_incoming_call()
@@ -291,6 +306,7 @@ class HfLine:
     def _on_sco_connection(self, link: ScoLink) -> None:
         log.info("SCO audio link up: %s", link)
         host = link.device.host
+        link.on(ScoLink.EVENT_DISCONNECTION, self._on_sco_disconnection)
 
         def on_packet(packet: hci.HCI_SynchronousDataPacket) -> None:
             sdu = self.pump.on_packet(packet.data, packet.packet_status)
@@ -299,6 +315,16 @@ class HfLine:
 
         link.sink = on_packet
 
+    def _on_sco_disconnection(self, reason: int = 0) -> None:
+        log.warning("SCO audio link dropped (reason %d)", reason)
+        if self.tracker.state is not CallState.ACTIVE:
+            return
+        self._finish_recording()
+        self._recording_id = None
+        if self.on_audio_link_lost:
+            self.on_audio_link_lost()
+        self.tracker._end()
+
     async def _next_audio(self) -> None:
         self._audio.clear()
         await self._audio.wait()
@@ -306,16 +332,59 @@ class HfLine:
     def _on_state(self, state: CallState) -> None:
         log.info("call state: %s", state.value)
         if state is CallState.ACTIVE:
+            self._start_recording()
             self._note("answered")
         elif state is CallState.ENDED:
+            self._finish_recording()
+            self._recording_id = None
             self._note("call ended" if self.tracker.outcome is CallOutcome.COMPLETED else "not answered")
         self._changed.set()
 
     def _on_link_lost(self, reason: int) -> None:
         log.warning("Bluetooth link to the phone dropped (reason %d)", reason)
+        if self.tracker.state is CallState.ACTIVE:
+            self._finish_recording()
+            self._recording_id = None
         self._link_lost.set()
         self._note("Bluetooth link to the phone lost")
         self._changed.set()
+
+    def _start_recording(self) -> None:
+        if self._recorder is not None or self._recording_id is None:
+            return
+        if self.recording_directory is None:
+            log.error("recording %s requested but no recordings directory is configured", self._recording_id)
+            self._recording_id = None
+            return
+        try:
+            self._recorder = WavRecorder(self.recording_directory, self._recording_id, self.rate)
+        except Exception:
+            log.exception("could not start call recording %s", self._recording_id)
+            self._recording_id = None
+
+    def _record_frame(self, received: np.ndarray, transmitted: np.ndarray) -> None:
+        if self._recorder is None:
+            return
+        try:
+            self._recorder.write_frame(received, transmitted)
+        except Exception:
+            log.exception("call recording failed; continuing the call without recording")
+            self._abort_recording()
+
+    def _finish_recording(self) -> None:
+        recorder, self._recorder = self._recorder, None
+        if recorder is None:
+            return
+        try:
+            recorder.finish()
+        except Exception:
+            log.exception("could not finalize call recording")
+            recorder.abort()
+
+    def _abort_recording(self) -> None:
+        recorder, self._recorder = self._recorder, None
+        if recorder is not None:
+            recorder.abort()
 
     def _note(self, event: str) -> None:
         if self.on_note:

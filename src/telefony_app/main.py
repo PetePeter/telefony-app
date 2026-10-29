@@ -40,7 +40,7 @@ LineQueue = asyncio.Queue[tuple[HfLine, rfcomm.DLC]]
 
 
 async def listen_for_phone(
-    device: Device, pairing_controller: PairingController | None = None
+    device: Device, pairing_controller: PairingController | None = None, recording_directory: Path | None = None
 ) -> tuple[LineQueue, Callable[[rfcomm.DLC], None]]:
     """Advertise as a hands-free unit and page the bonded phone. Every HFP line that comes up, now or after a drop,
     lands in the queue; the callback brings up a channel we opened ourselves."""
@@ -48,7 +48,7 @@ async def listen_for_phone(
     bring_ups: set[asyncio.Task] = set()
 
     async def bring_up(dlc: rfcomm.DLC) -> None:
-        line = HfLine(hfp.HfProtocol(dlc, HF_CONFIGURATION))
+        line = HfLine(hfp.HfProtocol(dlc, HF_CONFIGURATION), recording_directory=recording_directory)
         line.attach_sco(dlc.multiplexer.l2cap_channel.connection)
         try:
             await line.start()
@@ -132,7 +132,7 @@ async def run(config: Config, config_path: Path, mcp: bool) -> None:
                 web.pairing = pairing_controller
                 port = await stack.enter_async_context(web.serve())
                 log.info("web UI on http://%s:%d/", config.web_host, port)
-            connected, on_dlc = await listen_for_phone(device, pairing_controller)
+            connected, on_dlc = await listen_for_phone(device, pairing_controller, config.recordings_directory)
             line, dlc = await connected.get()
             log.info("phone connected")
             phone = BluetoothPhone(line, dlc, tts, stt)

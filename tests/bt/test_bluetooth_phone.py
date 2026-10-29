@@ -9,12 +9,14 @@ from tests.bt.test_hf_line import connect
 class Events:
     def __init__(self) -> None:
         self.links: list[bool] = []
+        self.call_states: list[tuple[str, str | None]] = []
 
     def link(self, up: bool) -> None:
         self.links.append(up)
 
     def ringing(self, number: str, name: str | None) -> None: ...
-    def call_state(self, state: str, reason: str | None = None) -> None: ...
+    def call_state(self, state: str, reason: str | None = None) -> None:
+        self.call_states.append((state, reason))
     def utterance(self, text: str, start_ms: int, end_ms: int) -> None: ...
     def dtmf(self, digit: str) -> None: ...
     def sms_received(self, handle: str, number: str, text: str) -> None: ...
@@ -62,3 +64,21 @@ async def test_late_disconnect_of_the_old_link_does_not_take_the_new_one_down():
 
     assert phone.link_up
     new_line.stop()
+
+
+async def test_call_recording_id_is_set_before_dial():
+    _, line = await connect()
+    phone = BluetoothPhone(line, line.protocol.dlc, None, None)
+    await phone.dial("0491570110", "interaction-2")
+    assert line.recording_id == "interaction-2"
+    line.stop()
+
+
+async def test_sco_loss_ends_the_service_call_as_link_lost():
+    _, line = await connect()
+    phone, events = BluetoothPhone(line, line.protocol.dlc, None, None), Events()
+    phone.attach(events)
+    assert line.on_audio_link_lost is not None
+    line.on_audio_link_lost()
+    assert events.call_states == [("ended", "link_lost")]
+    line.stop()

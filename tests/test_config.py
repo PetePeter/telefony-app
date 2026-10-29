@@ -47,6 +47,18 @@ def test_defaults_apply_to_optional_settings(tmp_path: Path):
     assert config.policy.outbound == "allowlist"
     assert (config.host, config.port) == ("127.0.0.1", 7781)
     assert config.tts == "auto"
+    assert config.recordings_directory is None
+
+
+def test_loads_absolute_recordings_directory(tmp_path: Path):
+    directory = tmp_path / "recordings"
+    config = load_config(write(tmp_path, FULL + f'\n[recordings]\ndirectory = "{directory.as_posix()}"\n'))
+    assert config.recordings_directory == directory
+
+
+def test_recordings_directory_must_be_absolute(tmp_path: Path):
+    with pytest.raises(ConfigError, match="absolute"):
+        load_config(write(tmp_path, FULL + '\n[recordings]\ndirectory = "recordings"\n'))
 
 
 @pytest.mark.parametrize(
