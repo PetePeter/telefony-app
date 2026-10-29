@@ -22,6 +22,7 @@ from telefony_app.bt.autoconnect import connect_bonded_phone
 from telefony_app.bt.bluetooth_phone import BluetoothPhone
 from telefony_app.bt.hf_line import HF_CONFIGURATION, HfLine
 from telefony_app.bt.map_client import make_mns_sdp_records
+from telefony_app.bt.pairing import PairingController
 from telefony_app.bt.sco_stream import UsbScoStreamer
 from telefony_app.config import Config, load_config
 from telefony_app.mcp_projection import McpProjection
@@ -38,7 +39,9 @@ log = logging.getLogger("telefony_app")
 LineQueue = asyncio.Queue[tuple[HfLine, rfcomm.DLC]]
 
 
-async def listen_for_phone(device: Device) -> tuple[LineQueue, Callable[[rfcomm.DLC], None]]:
+async def listen_for_phone(
+    device: Device, pairing_controller: PairingController | None = None
+) -> tuple[LineQueue, Callable[[rfcomm.DLC], None]]:
     """Advertise as a hands-free unit and page the bonded phone. Every HFP line that comes up, now or after a drop,
     lands in the queue; the callback brings up a channel we opened ourselves."""
     connected: LineQueue = asyncio.Queue()
@@ -67,10 +70,15 @@ async def listen_for_phone(device: Device) -> tuple[LineQueue, Callable[[rfcomm.
         MNS_SDP_HANDLE: make_mns_sdp_records(MNS_SDP_HANDLE, mns_channel),
     }
     await device.power_on()
-    await device.set_discoverable(True)
     await device.set_connectable(True)
+    if pairing_controller is None:  # preserve the legacy first-pair path when the admin API is disabled
+        await device.set_discoverable(True)
+    else:
+        pairing_controller.mark_ready()
     if dlc := await connect_bonded_phone(device):
         on_dlc(dlc)
+    elif pairing_controller is not None:
+        log.info("waiting for a pairing window from the setup API")
     else:
         log.info("discoverable as 'telefony'; pair it from the phone's Bluetooth settings")
     return connected, on_dlc
@@ -115,12 +123,16 @@ async def run(config: Config, config_path: Path, mcp: bool) -> None:
             UsbScoStreamer(transport.sink)
         device = Device.from_config_with_hci(device_config, transport.source, transport.sink)
         async with contextlib.AsyncExitStack() as stack:
+            pairing_controller = PairingController(device) if config.web_token else None
+            if pairing_controller is not None:
+                stack.push_async_callback(pairing_controller.close)
             web = None
             if config.web_token:  # up before the phone, so pairing can be watched from the page
                 web = WebApp(config_path, config, keystore=lambda: device.keystore)
+                web.pairing = pairing_controller
                 port = await stack.enter_async_context(web.serve())
                 log.info("web UI on http://%s:%d/", config.web_host, port)
-            connected, on_dlc = await listen_for_phone(device)
+            connected, on_dlc = await listen_for_phone(device, pairing_controller)
             line, dlc = await connected.get()
             log.info("phone connected")
             phone = BluetoothPhone(line, dlc, tts, stt)

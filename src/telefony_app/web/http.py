@@ -12,7 +12,7 @@ log = logging.getLogger(__name__)
 
 MAX_HEAD = 16 * 1024
 MAX_BODY = 64 * 1024
-_REASONS = {200: "OK", 400: "Bad Request", 401: "Unauthorized", 403: "Forbidden", 404: "Not Found",
+_REASONS = {200: "OK", 400: "Bad Request", 401: "Unauthorized", 403: "Forbidden", 404: "Not Found", 409: "Conflict",
             413: "Payload Too Large", 500: "Internal Server Error"}  # fmt: skip
 
 
@@ -32,7 +32,7 @@ class Request:
     def json(self) -> Any:
         try:
             return json.loads(self.body or b"{}")
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, UnicodeDecodeError):
             raise HttpError(400, "body is not JSON") from None
 
 

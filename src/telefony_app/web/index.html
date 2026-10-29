@@ -103,7 +103,7 @@
   <div id="tab-phone" hidden>
     <section class="panel">
       <h2>Pair a phone</h2>
-      <p class="muted">While waiting for a phone, this PC is discoverable as <b>telefony</b>. On the phone: Settings → Bluetooth → pair <b>telefony</b>.
+      <p class="muted">Start pairing in Timbre, then on the phone open Settings → Bluetooth and select <b>telefony</b>.
         On an iPhone, then tap ⓘ next to telefony and turn on Show Notifications and Sync Contacts.</p>
       <p id="pair-state"><span class="dot"></span>…</p>
     </section>
@@ -182,7 +182,7 @@ async function pollStatus() {
   const waiting = status.phone === "waiting";
   dot($("#status-line"), waiting ? "" : status.state.link === "up" ? "up" : "down",
     waiting ? "Waiting for the phone to connect" : `Link ${status.state.link}, engine ${status.state.engine}`);
-  dot($("#pair-state"), waiting ? "" : "up", waiting ? "Discoverable, waiting for a phone" : "Phone connected");
+  dot($("#pair-state"), waiting ? "" : "up", waiting ? "Waiting for Timbre to start pairing" : "Phone connected");
   $("#calls").replaceChildren(...(status.state?.calls ?? []).map((c) =>
     text(document.createElement("li"), `${c.callId} ${c.direction} ${c.number} — ${c.state}`)));
   if (!waiting && !stream) {

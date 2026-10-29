@@ -3,7 +3,9 @@ import pytest
 from tests.web.conftest import ADMIN, Web
 
 ROUTES = [("GET", "/api/config"), ("POST", "/api/config"), ("GET", "/api/status"), ("GET", "/api/events"),
-          ("GET", "/api/phones"), ("POST", "/api/phones/forget")]  # fmt: skip
+          ("GET", "/api/phones"), ("POST", "/api/phones/forget"), ("GET", "/api/setup/pairing"),
+          ("POST", "/api/setup/pairing"), ("POST", "/api/setup/pairing/confirm"),
+          ("POST", "/api/setup/pairing/cancel")]  # fmt: skip
 
 
 @pytest.mark.parametrize("method,path", ROUTES)
@@ -32,6 +34,22 @@ async def test_the_page_itself_is_public(web: Web):
 async def test_posts_need_the_csrf_header_and_our_origin(web: Web, headers: dict):
     reply = await web.http.request("POST", "/api/config", {"policy": {"country_code": "+44"}}, headers=headers)
     assert reply.status == 403
+
+
+@pytest.mark.parametrize("method,path", ROUTES[-4:])
+async def test_setup_api_requires_bearer_even_with_a_browser_session(web: Web, method: str, path: str):
+    login = await web.http.request("POST", "/api/login", {"token": ADMIN}, auth=False)
+    web.http.cookie = login.headers["set-cookie"].split(";")[0]
+    reply = await web.http.request(method, path, {}, auth=False)
+    assert reply.status == 401
+
+
+async def test_setup_api_checks_origin_on_get_and_post(web: Web):
+    configured = f"http://127.0.0.1:{web.http.port}"
+    assert (await web.http.request("GET", "/api/setup/pairing", headers={"Origin": configured})).status != 403
+    assert (await web.http.request("GET", "/api/setup/pairing", headers={"Origin": f"http://localhost:{web.http.port}"})).status == 403
+    assert (await web.http.request("POST", "/api/setup/pairing", {}, headers={"X-Telefony": None})).status == 403
+    assert (await web.http.request("POST", "/api/setup/pairing", {}, headers={"Origin": "http://evil.example"})).status == 403
 
 
 @pytest.mark.parametrize(
