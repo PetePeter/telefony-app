@@ -2,7 +2,9 @@
 
 import asyncio
 import json
+import logging
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -14,6 +16,7 @@ import numpy as np
 
 from telefony_app.bt.audio import resample, shape_for_phone
 
+log = logging.getLogger(__name__)
 PIPER_RATE = 22050  # medium voices; the model's .onnx.json says for sure
 
 
@@ -33,12 +36,33 @@ class PiperTts:
     async def synthesize(self, text: str, rate: int) -> np.ndarray:
         process = await asyncio.create_subprocess_exec(
             self.executable, "--model", self.model, "--output-raw",
-            stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+            stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            env=os.environ | {"PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"},  # piper reads stdin as UTF-8 whatever the console
         )
-        raw, _ = await process.communicate(text.encode())
+        raw, err = await process.communicate((one_line(text) + "\n").encode("utf-8"))
         if process.returncode:
-            raise RuntimeError(f"piper exited with {process.returncode}")
+            detail = err.decode("utf-8", "replace").strip().splitlines()[-1:] or [""]
+            raise RuntimeError(f"piper exited with {process.returncode}: {detail[0]}")
         return shape_for_phone(resample(np.frombuffer(raw, dtype=np.int16), self.rate, rate), rate)
+
+
+def one_line(text: str) -> str:
+    """Piper speaks each stdin line separately and chokes on control characters: send one clean line."""
+    return re.sub(r"\s+", " ", re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", text)).strip()
+
+
+class FallbackTts:
+    """The configured voice, and a backup (Windows' voice) when it fails, so the caller never hears silence."""
+
+    def __init__(self, primary: Tts, backup: Tts) -> None:
+        self.primary, self.backup = primary, backup
+
+    async def synthesize(self, text: str, rate: int) -> np.ndarray:
+        try:
+            return await self.primary.synthesize(text, rate)
+        except (OSError, RuntimeError) as failed:
+            log.warning("%s failed (%s) on %d chars; using the backup voice", type(self.primary).__name__, failed, len(text))
+            return await self.backup.synthesize(text, rate)
 
 
 class SapiTts:
@@ -73,7 +97,7 @@ def make_tts(kind: str, piper_model: str | None) -> Tts | None:
     here = Path(sys.executable).parent
     piper = shutil.which("piper") or shutil.which("piper", path=f"{here}{os.pathsep}{here / 'piper'}")
     if kind in ("auto", "piper") and piper and piper_model:
-        return PiperTts(piper, piper_model)
+        return FallbackTts(PiperTts(piper, piper_model), SapiTts()) if sys.platform == "win32" else PiperTts(piper, piper_model)
     if kind == "piper":
         raise RuntimeError("voice.tts = piper needs the piper executable (on PATH or in this venv) and voice.piper_model")
     if kind in ("auto", "sapi") and sys.platform == "win32":
