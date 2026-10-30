@@ -132,6 +132,17 @@
         "contacts": {
           "type": "object"
         },
+        "liveAudio": {
+          "type": "object",
+          "properties": {
+            "sampleRate": { "const": 8000 },
+            "channels": { "const": 2 },
+            "encoding": { "const": "pcm_s16le" },
+            "frameMs": { "const": 20 },
+            "controllerOnly": { "const": true }
+          },
+          "required": ["sampleRate", "channels", "encoding", "frameMs", "controllerOnly"]
+        },
         "heartbeat": {
           "type": "object"
         },
@@ -1207,6 +1218,39 @@
         }
       ]
     },
+    "CallAudioParams": {
+      "type": "object",
+      "properties": {
+        "callId": { "type": "string" }
+      },
+      "required": ["callId"]
+    },
+    "CallAudioStartRequest": {
+      "allOf": [
+        { "$ref": "#/$defs/JSONRPCRequest" },
+        {
+          "type": "object",
+          "properties": {
+            "method": { "const": "call.audio.start" },
+            "params": { "$ref": "#/$defs/CallAudioParams" }
+          },
+          "required": ["method", "params"]
+        }
+      ]
+    },
+    "CallAudioStopRequest": {
+      "allOf": [
+        { "$ref": "#/$defs/JSONRPCRequest" },
+        {
+          "type": "object",
+          "properties": {
+            "method": { "const": "call.audio.stop" },
+            "params": { "$ref": "#/$defs/CallAudioParams" }
+          },
+          "required": ["method", "params"]
+        }
+      ]
+    },
     "StatusParams": {
       "type": "object",
       "properties": {}
@@ -1348,6 +1392,12 @@
           "$ref": "#/$defs/CallSendDtmfRequest"
         },
         {
+          "$ref": "#/$defs/CallAudioStartRequest"
+        },
+        {
+          "$ref": "#/$defs/CallAudioStopRequest"
+        },
+        {
           "$ref": "#/$defs/ConferenceCreateRequest"
         },
         {
@@ -1389,6 +1439,8 @@
         "call.resume",
         "call.say",
         "call.sendDtmf",
+        "call.audio.start",
+        "call.audio.stop",
         "conference.create",
         "conference.join",
         "sms.send",
@@ -1685,6 +1737,19 @@
         "type"
       ]
     },
+    "CallAudioFrameEvent": {
+      "type": "object",
+      "properties": {
+        "type": { "const": "call.audio.frame" },
+        "callId": { "type": "string" },
+        "sequence": { "type": "integer", "minimum": 1 },
+        "sampleRate": { "const": 8000 },
+        "channels": { "const": 2 },
+        "encoding": { "const": "pcm_s16le" },
+        "data": { "type": "string", "contentEncoding": "base64", "minLength": 856, "maxLength": 856 }
+      },
+      "required": ["type", "callId", "sequence", "sampleRate", "channels", "encoding", "data"]
+    },
     "Event": {
       "oneOf": [
         {
@@ -1713,6 +1778,9 @@
         },
         {
           "$ref": "#/$defs/HeartbeatEvent"
+        },
+        {
+          "$ref": "#/$defs/CallAudioFrameEvent"
         }
       ]
     }

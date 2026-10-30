@@ -158,6 +158,22 @@ async def test_recording_start_failure_does_not_break_sco_audio(tmp_path):
         line.stop()
 
 
+async def test_live_audio_callback_is_independent_of_recording(tmp_path):
+    _, line = await connect(recording_directory=tmp_path)
+    frames = []
+    try:
+        line.set_live_audio_callback(frames.append)
+        for _ in range(4):
+            line.pump.on_packet(np.full(48, 11, dtype=np.int16).tobytes(), HCI_SynchronousDataPacket.Status.CORRECTLY_RECEIVED_DATA)
+
+        assert len(frames) == 1
+        assert line._recorder is None
+        assert list(tmp_path.iterdir()) == []
+    finally:
+        line.set_live_audio_callback(None)
+        line.stop()
+
+
 async def test_unanswered_or_unrecorded_call_does_not_create_a_recording(tmp_path):
     _, line = await connect(recording_directory=tmp_path)
     try:

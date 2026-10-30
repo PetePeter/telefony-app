@@ -1,6 +1,7 @@
 """The port between the PhAP service and a real phone line (Bluetooth HFP today; SIP or a modem later)."""
 
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from dataclasses import dataclass
 import re
 from typing import Protocol
@@ -54,10 +55,16 @@ class Phone(ABC):
 
     tts_available: bool
     stt_available: bool
+    live_audio_available = False
     link_up: bool = True
 
     @abstractmethod
     def attach(self, events: PhoneEvents) -> None: ...
+
+    def set_live_audio_callback(self, callback: Callable[[bytes], None] | None) -> None:
+        """Subscribe to 20 ms stereo PCM16LE/8 kHz frames, or raise when unsupported."""
+        if callback is not None:
+            raise PhoneError("live audio is unsupported")
 
     @abstractmethod
     async def dial(self, number: str, recording_id: str | None = None) -> None: ...

@@ -2,6 +2,7 @@
 
 from collections.abc import Callable
 from fractions import Fraction
+import logging
 
 import numpy as np
 from bumble.hci import HCI_SynchronousDataPacket
@@ -10,6 +11,10 @@ from scipy.signal import butter, resample_poly, sosfilt
 from telefony_app.bt.dtmf import DtmfDecoder
 
 _PEAK = 16384  # -6 dBFS: CVSD's slope overload distorts near full scale
+LIVE_AUDIO_RATE = 8000
+LIVE_AUDIO_FRAME_SAMPLES = 160  # 20 ms at 8 kHz
+
+log = logging.getLogger(__name__)
 
 
 STT_RATE = 16000  # whisper's input rate
@@ -41,6 +46,9 @@ class AudioPump:
         self.on_dtmf: Callable[[str], None] | None = None
         self.tap: Callable[[np.ndarray], None] | None = None  # sees all downlink audio, e.g. a transcript
         self.on_recording_frame: Callable[[np.ndarray, np.ndarray], None] | None = None
+        self._live_audio_callback: Callable[[bytes], None] | None = None
+        self._live_audio_buffer = np.empty((LIVE_AUDIO_FRAME_SAMPLES, 2), dtype="<i2")
+        self._live_audio_samples = 0
 
     @property
     def uplink_pending(self) -> int:
@@ -48,6 +56,11 @@ class AudioPump:
 
     def queue_uplink(self, pcm: np.ndarray) -> None:
         self._uplink = np.concatenate([self._uplink, pcm.astype(np.int16)])
+
+    def set_live_audio_callback(self, callback: Callable[[bytes], None] | None) -> None:
+        """Capture future 20 ms stereo PCM16LE frames; changing listeners drops partial audio."""
+        self._live_audio_callback = callback
+        self._live_audio_samples = 0
 
     def on_packet(self, data: bytes, status: int) -> bytes:
         received = np.frombuffer(data, dtype=np.int16)
@@ -69,7 +82,30 @@ class AudioPump:
         self._uplink = self._uplink[take:]
         if self.on_recording_frame:
             self.on_recording_frame(recording_receive, out)
+        self._capture_live_audio(recording_receive, out)
         return out.tobytes()
+
+    def _capture_live_audio(self, received: np.ndarray, transmitted: np.ndarray) -> None:
+        if self._live_audio_callback is None:
+            return
+        offset = 0
+        while offset < len(received):
+            count = min(LIVE_AUDIO_FRAME_SAMPLES - self._live_audio_samples, len(received) - offset)
+            end = offset + count
+            target = self._live_audio_samples
+            self._live_audio_buffer[target : target + count, 0] = received[offset:end]
+            self._live_audio_buffer[target : target + count, 1] = transmitted[offset:end]
+            self._live_audio_samples += count
+            offset = end
+            if self._live_audio_samples == LIVE_AUDIO_FRAME_SAMPLES:
+                callback = self._live_audio_callback
+                frame = self._live_audio_buffer.tobytes()
+                self._live_audio_samples = 0
+                if callback is not None:
+                    try:
+                        callback(frame)
+                    except Exception:
+                        log.exception("live audio callback failed; continuing SCO audio")
 
     def take_downlink(self) -> np.ndarray:
         pcm = np.concatenate(self._downlink) if self._downlink else np.zeros(0, dtype=np.int16)

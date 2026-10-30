@@ -11,7 +11,7 @@ import numpy as np
 from bumble import hci, hfp
 from bumble.device import Connection, Device, ScoLink
 
-from telefony_app.bt.audio import STT_RATE, AudioPump, resample
+from telefony_app.bt.audio import LIVE_AUDIO_RATE, STT_RATE, AudioPump, resample
 from telefony_app.bt.call_state import CallEnded, CallOutcome, CallState, CallTracker
 from telefony_app.bt.dtmf import DtmfDecoder
 from telefony_app.bt.recording import WavRecorder
@@ -55,7 +55,7 @@ class HfLine:
     def __init__(self, protocol: hfp.HfProtocol, recording_directory: Path | None = None) -> None:
         self.protocol = protocol
         self.tracker = CallTracker()
-        self.rate = 8000
+        self.rate = LIVE_AUDIO_RATE
         self.pump = AudioPump(DtmfDecoder(self.rate))
         self.recording_directory = recording_directory
         self._recording_id: str | None = None
@@ -137,6 +137,10 @@ class HfLine:
 
     def set_recording_id(self, recording_id: str | None) -> None:
         self._recording_id = validate_recording_id(recording_id)
+
+    def set_live_audio_callback(self, callback: Callable[[bytes], None] | None) -> None:
+        """Capture live call frames independently from the optional WAV recorder."""
+        self.pump.set_live_audio_callback(callback)
 
     async def reject(self) -> None:
         await self.protocol.reject_incoming_call()

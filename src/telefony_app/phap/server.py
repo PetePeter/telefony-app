@@ -1,6 +1,7 @@
 """PhAP 2026-10-27 over WebSocket: hello/welcome, roles, events with resume, idempotent methods, heartbeat."""
 
 import asyncio
+import base64
 import contextlib
 import hmac
 import json
@@ -45,6 +46,8 @@ METHODS: dict[str, tuple[bool, Handler]] = {
     "call.resume": _method(True, lambda s, p: s.resume(p["callId"])),
     "call.say": _method(True, lambda s, p: s.say(p["callId"], p["text"])),
     "call.sendDtmf": _method(True, lambda s, p: s.send_dtmf(p["callId"], p["digits"])),
+    "call.audio.start": _method(True, lambda s, p: _sync(s.start_live_audio(p["callId"]))),
+    "call.audio.stop": _method(True, lambda s, p: _sync(s.stop_live_audio(p["callId"]))),
     "conference.create": _method(True, lambda s, p: s.conference_create(p["callId"], p.get("number"), p.get("contact"))),
     "conference.join": _method(True, lambda s, p: s.conference_join(p["callId"])),
     "sms.send": _method(True, lambda s, p: s.sms_send(p["number"], p["text"])),
@@ -89,6 +92,9 @@ class PhapServer:
         self.heartbeat_s = heartbeat_s
         self.instance_id = f"{time.time_ns():x}"
         self._controller: ServerConnection | None = None
+        self._audio_ws: ServerConnection | None = None
+        self._audio_queue: asyncio.Queue[dict[str, Any] | None] | None = None
+        self._audio_task: asyncio.Task | None = None
         self._done: dict[tuple, tuple[float, asyncio.Future]] = {}  # (identity, request id) -> (completed, response)
 
     @contextlib.asynccontextmanager
@@ -124,6 +130,8 @@ class PhapServer:
             if queue is not None:
                 self.service.events.unsubscribe(queue)
             if self._controller is ws:
+                self.service.stop_live_audio()
+                await self._stop_audio_forwarder(ws)
                 self._controller = None
 
     async def _handshake(self, ws: ServerConnection) -> tuple[tuple, asyncio.Queue] | None:
@@ -211,7 +219,57 @@ class PhapServer:
         if not isinstance(request, dict) or request.get("jsonrpc") != "2.0" or "id" not in request or "method" not in request or not valid_id:
             await self._send(ws, _response(id if valid_id else None, error=PhapError(INVALID_REQUEST, "invalid request")))
             return
-        await self._send(ws, await self._dispatch(ws, identity, request))
+        response = await self._dispatch(ws, identity, request)
+        if request["method"] == "call.audio.stop" and "result" in response:
+            await self._stop_audio_forwarder(ws)
+        await self._send(ws, response)
+        if request["method"] == "call.audio.start" and "result" in response:
+            await self._start_audio_forwarder(ws)
+
+    async def _start_audio_forwarder(self, ws: ServerConnection) -> None:
+        queue = self.service.live_audio_queue
+        if queue is None or self._controller is not ws:
+            return
+        if self._audio_task and not self._audio_task.done():
+            if self._audio_ws is ws and self._audio_queue is queue:
+                return
+            await self._stop_audio_forwarder(self._audio_ws)
+        self._audio_ws, self._audio_queue = ws, queue
+        self._audio_task = asyncio.create_task(self._forward_audio(ws, queue))
+        self._audio_task.add_done_callback(self._audio_forwarder_done)
+
+    def _audio_forwarder_done(self, task: asyncio.Task) -> None:
+        if task is self._audio_task:
+            self._audio_ws = self._audio_queue = self._audio_task = None
+        if not task.cancelled() and (error := task.exception()):
+            log.error("live audio forwarding failed", exc_info=(type(error), error, error.__traceback__))
+
+    async def _stop_audio_forwarder(self, ws: ServerConnection | None) -> None:
+        if ws is None or self._audio_ws is not ws:
+            return
+        task = self._audio_task
+        self._audio_ws = self._audio_queue = self._audio_task = None
+        if task and not task.done():
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+
+    async def _forward_audio(self, ws: ServerConnection, queue: asyncio.Queue[dict[str, Any] | None]) -> None:
+        with contextlib.suppress(ConnectionClosed):
+            while True:
+                frame = await queue.get()
+                if frame is None:
+                    return
+                params = {
+                    "type": "call.audio.frame",
+                    "callId": frame["callId"],
+                    "sequence": frame["sequence"],
+                    "sampleRate": 8000,
+                    "channels": 2,
+                    "encoding": "pcm_s16le",
+                    "data": base64.b64encode(frame["data"]).decode("ascii"),
+                }
+                await self._send(ws, {"jsonrpc": "2.0", "method": "event", "params": params})
 
     async def _dispatch(self, ws: ServerConnection, identity: tuple, request: dict) -> dict:
         id, method, params = request["id"], request["method"], request.get("params") or {}

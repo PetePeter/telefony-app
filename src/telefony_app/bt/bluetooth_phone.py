@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import logging
 import wave
+from collections.abc import Callable
 from datetime import datetime
 
 from bumble import hfp, rfcomm
@@ -22,6 +23,8 @@ _UTTERANCE_MAX_S = 30.0
 
 
 class BluetoothPhone(Phone):
+    live_audio_available = True
+
     def __init__(self, line: HfLine, dlc: rfcomm.DLC, tts: Tts | None, stt: WhisperStt | None) -> None:
         self.tts, self.stt = tts, stt
         self.tts_available, self.stt_available = tts is not None, stt is not None
@@ -30,12 +33,14 @@ class BluetoothPhone(Phone):
         self._hung_up = False
         self._ringing = False  # the current call came in rather than going out
         self._tasks: dict[str, asyncio.Task] = {}
+        self._live_audio_callback: Callable[[bytes], None] | None = None
         self._bind(line, dlc)
 
     def _bind(self, line: HfLine, dlc: rfcomm.DLC) -> None:
         self.line, self.dlc = line, dlc
         self.link_up = True
         self.link_down.clear()
+        line.set_live_audio_callback(self._live_audio_callback)
         self._contacts: list[Contact] | None = None  # the phone may have changed them while we were away
         line.on_note = self._on_note
         line.on_audio_link_lost = self._on_audio_link_lost
@@ -58,6 +63,10 @@ class BluetoothPhone(Phone):
     def attach(self, events: PhoneEvents) -> None:
         self.events = events
         self._watch_incoming()
+
+    def set_live_audio_callback(self, callback: Callable[[bytes], None] | None) -> None:
+        self._live_audio_callback = callback
+        self.line.set_live_audio_callback(callback)
 
     # --- calls ---
 

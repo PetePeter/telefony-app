@@ -1,7 +1,9 @@
 """PhAP 2026-10-27 compliance, over a real WebSocket against the real service and a fake phone."""
 
 import asyncio
+import base64
 import json
+from typing import cast
 
 import jsonschema
 import pytest
@@ -9,6 +11,7 @@ import websockets
 
 from telefony_app.phap import server
 from telefony_app.phone import PhoneError
+from telefony_app.service import PhoneService, Policy
 from tests.conftest import ALLOWED, BLOCKED, assert_compliant
 from tests.fakes import FakePhone
 
@@ -32,6 +35,13 @@ async def test_welcome_is_compliant_and_reports_state(connect):
     assert result["role"] == "controller"
     assert result["state"] == {"link": "up", "engine": "ready", "calls": []}
     assert result["capabilities"]["voice"] == {"tts": True, "stt": True}
+    assert result["capabilities"]["liveAudio"] == {
+        "sampleRate": 8000,
+        "channels": 2,
+        "encoding": "pcm_s16le",
+        "frameMs": 20,
+        "controllerOnly": True,
+    }
 
 
 async def test_wrong_token_is_unauthorized_then_closes_4401(connect):
@@ -164,6 +174,88 @@ async def test_outbound_call_lifecycle_events(connect, phone: FakePhone):
     phone.remote_hangs_up()
     ended = await client.event("call.state")
     assert (ended["state"], ended["reason"]) == ("ended", "remote")
+
+
+async def test_live_audio_is_explicit_controller_only_transient_and_stops(connect, phone: FakePhone):
+    controller = await connect()
+    await controller.hello()
+    observer = await connect()
+    await observer.hello(role="observer")
+    call_id = (await controller.request("call.dial", {"number": ALLOWED}))["result"]["callId"]
+
+    start = {"jsonrpc": "2.0", "id": 1, "method": "call.audio.start", "params": {"callId": call_id}}
+    assert_compliant(start, "CallAudioStartRequest")
+    stop = {"jsonrpc": "2.0", "id": 2, "method": "call.audio.stop", "params": {"callId": call_id}}
+    assert_compliant(stop, "CallAudioStopRequest")
+    assert (await controller.request("call.audio.start", {"callId": call_id}))["error"]["code"] == -32602
+    assert phone.live_audio_callback is None
+
+    phone.remote_answers()
+    assert (await observer.request("call.audio.start", {"callId": call_id}))["error"]["code"] == 1005
+    assert phone.live_audio_callback is None
+    assert (await controller.request("call.audio.start", {"callId": call_id}))["result"] == {}
+    assert phone.live_audio_callback is not None
+
+    phone.emit_live_audio_frame(bytes([0x2A]) * 640)
+    frame = await controller.event("call.audio.frame")
+    assert frame == {
+        "type": "call.audio.frame",
+        "callId": call_id,
+        "sequence": 1,
+        "sampleRate": 8000,
+        "channels": 2,
+        "encoding": "pcm_s16le",
+        "data": base64.b64encode(bytes([0x2A]) * 640).decode("ascii"),
+    }
+    assert all(event["type"] != "call.audio.frame" for event in observer.events)
+    service = cast(PhoneService, phone.events)
+    replay, _ = service.events.since(0)
+    assert all(event["type"] != "call.audio.frame" for event in replay)
+
+    assert (await controller.request("call.audio.stop", {"callId": call_id}))["result"] == {}
+    assert phone.live_audio_callback is None
+    phone.emit_live_audio_frame(bytes(640))
+    with pytest.raises(TimeoutError):
+        await controller.event("call.audio.frame", timeout=0.05)
+
+    assert (await controller.request("call.audio.start", {"callId": call_id}))["result"] == {}
+    phone.remote_hangs_up()
+    assert phone.live_audio_callback is None
+
+
+async def test_live_audio_stops_when_controller_disconnects(connect, phone: FakePhone):
+    controller = await connect()
+    await controller.hello()
+    call_id = (await controller.request("call.dial", {"number": ALLOWED}))["result"]["callId"]
+    phone.remote_answers()
+    assert (await controller.request("call.audio.start", {"callId": call_id}))["result"] == {}
+    assert phone.live_audio_callback is not None
+
+    await controller.ws.close()
+    for _ in range(20):
+        if phone.live_audio_callback is None:
+            break
+        await asyncio.sleep(0.01)
+    assert phone.live_audio_callback is None
+
+
+async def test_live_audio_queue_drops_oldest_frames():
+    phone = FakePhone()
+    service = PhoneService(phone, Policy(allowlist=[ALLOWED]))
+    call_id = await service.dial(ALLOWED)
+    phone.remote_answers()
+    queue = service.start_live_audio(call_id)
+
+    for index in range(12):
+        phone.emit_live_audio_frame(bytes([index]) * 640)
+
+    frames = [queue.get_nowait() for _ in range(queue.qsize())]
+    frames = [frame for frame in frames if frame is not None]
+    assert [frame["sequence"] for frame in frames] == list(range(3, 13))
+    assert frames[0]["data"] == bytes([2]) * 640
+
+    service.stop_live_audio(call_id)
+    assert phone.live_audio_callback is None
 
 
 async def test_call_dial_passes_recording_id_to_phone(connect, phone: FakePhone):

@@ -18,6 +18,7 @@ log = logging.getLogger(__name__)
 
 PREVIEW_LENGTH = 160
 DTMF_DIGITS = re.compile(r"[0-9*#,]{1,32}")
+LIVE_AUDIO_QUEUE_FRAMES = 10
 
 # PhAP error codes (spec/2026-10-27/errors.md)
 INVALID_PARAMS = -32602
@@ -72,6 +73,9 @@ class PhoneService:
         self._speaking = asyncio.Lock()
         self._tasks: set[asyncio.Task] = set()
         self.says: dict[str, asyncio.Task] = {}  # sayId -> playback; its result is None, or why it failed
+        self._live_audio_call_id: str | None = None
+        self._live_audio_queue: asyncio.Queue[dict[str, Any] | None] | None = None
+        self._live_audio_sequence = 0
         phone.attach(self)
 
     # --- state ---
@@ -81,13 +85,82 @@ class PhoneService:
         return {"link": "up" if self.phone.link_up else "down", "engine": self.engine, "calls": live}
 
     def capabilities(self) -> dict:
-        return {
+        capabilities = {
             "calls": {},
             "conference": {},
             "sms": {},
             "contacts": {},
             "voice": {"tts": self.phone.tts_available, "stt": self.phone.stt_available},
         }
+        if self.phone.live_audio_available:
+            capabilities["liveAudio"] = {
+                "sampleRate": 8000,
+                "channels": 2,
+                "encoding": "pcm_s16le",
+                "frameMs": 20,
+                "controllerOnly": True,
+            }
+        return capabilities
+
+    @property
+    def live_audio_queue(self) -> asyncio.Queue[dict[str, Any] | None] | None:
+        return self._live_audio_queue
+
+    def start_live_audio(self, call_id: str) -> asyncio.Queue[dict[str, Any] | None]:
+        self._call(call_id, "active")
+        self._ready()
+        if not self.phone.live_audio_available:
+            raise PhapError(UNSUPPORTED, "unsupported", {"detail": "live audio is unavailable"})
+        if self._live_audio_queue is not None:
+            if self._live_audio_call_id == call_id:
+                return self._live_audio_queue
+            raise PhapError(BUSY, "busy", {"detail": "live audio is already active"})
+
+        queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue(maxsize=LIVE_AUDIO_QUEUE_FRAMES)
+        self._live_audio_call_id = call_id
+        self._live_audio_sequence = 0
+        self._live_audio_queue = queue
+        try:
+            self.phone.set_live_audio_callback(self._offer_live_audio)
+        except Exception:
+            self._live_audio_call_id = None
+            self._live_audio_queue = None
+            log.exception("could not start live audio for call %s", call_id)
+            raise PhapError(PHONE_ERROR, "phone_error", {"detail": "could not start live audio"}) from None
+        return queue
+
+    def stop_live_audio(self, call_id: str | None = None) -> None:
+        queue = self._live_audio_queue
+        if queue is None:
+            if call_id is not None and call_id not in self.calls:
+                raise PhapError(NO_SUCH_CALL, "no_such_call")
+            return
+        if call_id is not None and call_id != self._live_audio_call_id:
+            raise PhapError(INVALID_PARAMS, "invalid params", {"detail": "live audio belongs to another call"})
+
+        self._live_audio_call_id = None
+        self._live_audio_queue = None
+        try:
+            self.phone.set_live_audio_callback(None)
+        except Exception:
+            log.exception("could not stop live audio for call %s", call_id)
+        while not queue.empty():
+            with contextlib.suppress(asyncio.QueueEmpty):
+                queue.get_nowait()
+        queue.put_nowait(None)
+
+    def _offer_live_audio(self, data: bytes) -> None:
+        queue = self._live_audio_queue
+        call_id = self._live_audio_call_id
+        if queue is None or call_id is None:
+            return
+        self._live_audio_sequence += 1
+        frame = {"callId": call_id, "sequence": self._live_audio_sequence, "data": data}
+        if queue.full():
+            with contextlib.suppress(asyncio.QueueEmpty):
+                queue.get_nowait()
+        with contextlib.suppress(asyncio.QueueFull):
+            queue.put_nowait(frame)
 
     # --- calls ---
 
@@ -226,6 +299,8 @@ class PhoneService:
 
     def _set_engine(self, status: str) -> None:
         if self.engine != status:
+            if status != "ready":
+                self.stop_live_audio()
             self.engine = status
             self.events.emit("engine", status=status)
 
@@ -272,11 +347,12 @@ class PhoneService:
         self.events.emit("sms.received", **_summary(handle, number, None, text))
 
     def link(self, up: bool) -> None:
-        self.events.emit("link", status="up" if up else "down")
         if not up:
+            self.stop_live_audio()
             for call in self.calls.values():
                 if call.state != "ended":
                     self._set_state(call, "ended", "link_lost")
+        self.events.emit("link", status="up" if up else "down")
 
     # --- internals ---
 
@@ -346,6 +422,8 @@ class PhoneService:
     ) -> None:
         if call.state == state and not force:
             return
+        if state != "active" and self._live_audio_call_id == call.call_id:
+            self.stop_live_audio(call.call_id)
         call.state = state
         call.conference = call.conference or bool(conference)
         self.events.emit("call.state", callId=call.call_id, state=state, reason=reason, conference=conference)

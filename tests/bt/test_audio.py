@@ -91,6 +91,48 @@ def test_recording_tap_pairs_raw_receive_with_actual_padded_transmit_frame():
     assert captured[1][1].tolist() == [0, 0]
 
 
+def test_live_audio_emits_20_ms_interleaved_stereo_pcm16_frames():
+    frames = []
+    pump = AudioPump()
+    pump.set_live_audio_callback(frames.append)
+    pump.queue_uplink(np.full(192, -321, dtype=np.int16))
+
+    for _ in range(4):
+        pump.on_packet(packet(48, 123), GOOD)
+
+    assert len(frames) == 1
+    samples = np.frombuffer(frames[0], dtype="<i2")
+    assert len(frames[0]) == 640  # 160 stereo samples, 20 ms at 8 kHz
+    assert (samples[::2] == 123).all()
+    assert (samples[1::2] == -321).all()
+
+
+def test_live_audio_subscription_drops_pre_subscription_samples():
+    pump = AudioPump()
+    pump.on_packet(packet(80, 7), GOOD)
+    frames = []
+    pump.set_live_audio_callback(frames.append)
+
+    pump.on_packet(packet(80, 8), GOOD)
+    assert frames == []
+    pump.on_packet(packet(80, 9), GOOD)
+
+    samples = np.frombuffer(frames[0], dtype="<i2")
+    assert (samples[::2][:80] == 8).all()
+    assert (samples[::2][80:] == 9).all()
+
+
+def test_live_audio_callback_failure_does_not_escape_audio_pump(caplog):
+    def broken(_frame):
+        raise RuntimeError("listener failed")
+
+    pump = AudioPump()
+    pump.set_live_audio_callback(broken)
+
+    assert pump.on_packet(packet(160, 1), GOOD) == bytes(320)
+    assert "live audio callback failed" in caplog.text
+
+
 def gain_difference_db(hz_a: float, hz_b: float) -> float:
     """Shape a two-tone mix (output is peak-normalised) and return level(a) - level(b) in dB."""
     out = shape_for_phone(tone(8000, 1.0, hz=hz_a) // 2 + tone(8000, 1.0, hz=hz_b) // 2, 8000)
