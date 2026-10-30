@@ -28,6 +28,7 @@ class Config:
     heartbeat_s: float = 10
     event_buffer: int = 1000
     tts: str = "auto"
+    sapi_voice: str | None = None
     piper_model: str | None = None
     stt_model: str | None = "small.en"
     web_host: str = "127.0.0.1"
@@ -54,6 +55,9 @@ def parse_config(raw: dict) -> Config:
     tts = voice.get("tts", "auto")
     if tts not in TTS_BACKENDS:
         raise ConfigError(f"voice.tts must be one of {', '.join(TTS_BACKENDS)}, not {tts!r}")
+    if "sapi_voice" in voice and not isinstance(voice["sapi_voice"], str):
+        raise ConfigError("voice.sapi_voice must be a string")
+    sapi_voice = voice.get("sapi_voice")
     allowlist = list(policy.get("allowlist", []))
     for number in allowlist:
         try:
@@ -82,6 +86,7 @@ def parse_config(raw: dict) -> Config:
         heartbeat_s=_number(phap, "heartbeat_s", 10, float, "phap"),
         event_buffer=_number(phap, "event_buffer", 1000, int, "phap"),
         tts=tts,
+        sapi_voice=sapi_voice,
         piper_model=voice.get("piper_model"),
         stt_model=voice.get("stt_model", "small.en"),
         web_host=web_host,

@@ -109,7 +109,7 @@ async def _page_until_back(device: Device, on_dlc: Callable[[rfcomm.DLC], None])
 
 
 async def run(config: Config, config_path: Path, mcp: bool) -> None:
-    tts, stt = make_tts(config.tts, config.piper_model), make_stt(config.stt_model)
+    tts, stt = make_tts(config.tts, config.piper_model, config.sapi_voice), make_stt(config.stt_model)
     log.info("text-to-speech: %s; speech-to-text: %s", type(tts).__name__ if tts else "none", "whisper" if stt else "none")
     async with await open_transport(config.transport) as transport:
         device_config = DeviceConfiguration(

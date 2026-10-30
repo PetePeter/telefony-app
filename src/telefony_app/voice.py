@@ -65,23 +65,53 @@ class FallbackTts:
             return await self.backup.synthesize(text, rate)
 
 
+class SapiSynthesizer(Protocol):
+    async def synthesize(self, text: str, path: Path, voice_name: str | None) -> bool: ...
+
+
+class PowerShellSapiSynthesizer:
+    """Render through Windows SAPI; return whether voice selection used the default fallback."""
+
+    async def synthesize(self, text: str, path: Path, voice_name: str | None) -> bool:
+        script = (
+            "Add-Type -AssemblyName System.Speech; $s = New-Object System.Speech.Synthesis.SpeechSynthesizer; "
+            "if ($env:TELEFONY_APP_SAPI_VOICE_CONFIGURED -eq '1') { "
+            "$defaultVoiceName = $s.Voice.Name; "
+            "try { $s.SelectVoice($env:TELEFONY_APP_SAPI_VOICE) } "
+            "catch { $s.SelectVoice($defaultVoiceName); [Console]::Error.WriteLine('__TELEFONY_SAPI_VOICE_FALLBACK__') } }; "
+            f"$s.SetOutputToWaveFile('{path}'); $s.Speak([Console]::In.ReadToEnd()); $s.Dispose()"
+        )
+        env = os.environ.copy()
+        env.pop("TELEFONY_APP_SAPI_VOICE", None)
+        env.pop("TELEFONY_APP_SAPI_VOICE_CONFIGURED", None)
+        if voice_name is not None:
+            env["TELEFONY_APP_SAPI_VOICE"] = voice_name
+            env["TELEFONY_APP_SAPI_VOICE_CONFIGURED"] = "1"
+        process = await asyncio.create_subprocess_exec(
+            "powershell", "-NoProfile", "-Command", script,
+            stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
+            env=env,
+        )
+        _, stderr = await process.communicate(text.encode())
+        return b"__TELEFONY_SAPI_VOICE_FALLBACK__" in (stderr or b"")
+
+
 class SapiTts:
     """Windows' built-in voice via System.Speech, through PowerShell."""
+
+    def __init__(self, voice_name: str | None = None, synthesizer: SapiSynthesizer | None = None) -> None:
+        self.voice_name = voice_name
+        self.synthesizer = synthesizer if synthesizer is not None else PowerShellSapiSynthesizer()
+        self._warned_missing_voice = False
 
     async def synthesize(self, text: str, rate: int) -> np.ndarray:
         fd, name = tempfile.mkstemp(suffix=".wav")
         os.close(fd)
         path = Path(name)
-        script = (
-            "Add-Type -AssemblyName System.Speech; $s = New-Object System.Speech.Synthesis.SpeechSynthesizer; "
-            f"$s.SetOutputToWaveFile('{path}'); $s.Speak([Console]::In.ReadToEnd()); $s.Dispose()"
-        )
         try:
-            process = await asyncio.create_subprocess_exec(
-                "powershell", "-NoProfile", "-Command", script,
-                stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
-            )
-            await process.communicate(text.encode())
+            if await self.synthesizer.synthesize(text, path, self.voice_name) and not self._warned_missing_voice:
+                log.warning("SAPI voice %r was not found; using the default Windows voice", self.voice_name)
+                self._warned_missing_voice = True
             with wave.open(str(path)) as wav:
                 pcm = np.frombuffer(wav.readframes(wav.getnframes()), dtype=np.int16)
                 source_rate = wav.getframerate()
@@ -90,18 +120,18 @@ class SapiTts:
         return shape_for_phone(resample(pcm, source_rate, rate), rate)
 
 
-def make_tts(kind: str, piper_model: str | None) -> Tts | None:
+def make_tts(kind: str, piper_model: str | None, sapi_voice: str | None = None) -> Tts | None:
     """auto: Piper if installed and a model is configured, else Windows SAPI, else no speech."""
     # A venv's Scripts folder is on PATH only when activated; pip install piper-tts puts piper there.
     # The Windows release ships it in a piper/ folder beside telefony-app.exe.
     here = Path(sys.executable).parent
     piper = shutil.which("piper") or shutil.which("piper", path=f"{here}{os.pathsep}{here / 'piper'}")
     if kind in ("auto", "piper") and piper and piper_model:
-        return FallbackTts(PiperTts(piper, piper_model), SapiTts()) if sys.platform == "win32" else PiperTts(piper, piper_model)
+        return FallbackTts(PiperTts(piper, piper_model), SapiTts(sapi_voice)) if sys.platform == "win32" else PiperTts(piper, piper_model)
     if kind == "piper":
         raise RuntimeError("voice.tts = piper needs the piper executable (on PATH or in this venv) and voice.piper_model")
     if kind in ("auto", "sapi") and sys.platform == "win32":
-        return SapiTts()
+        return SapiTts(sapi_voice)
     return None
 
 

@@ -71,6 +71,7 @@ Edit `telefony.toml`:
 - `[phap] token`: the generated token. Every PhAP client needs it.
 - `[policy] allowlist`: the numbers that may call in and be called. **Never commit real numbers**: keep `telefony.toml` out of git, or outside the repo.
 - `[voice] tts = "auto"` uses the built-in Windows voice; `stt_model = "small.en"` downloads a whisper model (~500 MB) on first run.
+- Optional `[voice] sapi_voice = "Microsoft Zira Desktop"` selects that exact installed Windows SAPI voice.
 
 **Verify:** `.venv/Scripts/python -c "from telefony_app.config import load_config; print(load_config('telefony.toml'))"` prints the config without an error.
 

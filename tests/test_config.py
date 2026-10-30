@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from telefony_app.config import ConfigError, load_config
+from telefony_app.config import ConfigError, load_config, parse_config
 
 
 def write(tmp_path: Path, text: str) -> Path:
@@ -47,7 +47,26 @@ def test_defaults_apply_to_optional_settings(tmp_path: Path):
     assert config.policy.outbound == "allowlist"
     assert (config.host, config.port) == ("127.0.0.1", 7781)
     assert config.tts == "auto"
+    assert config.sapi_voice is None
     assert config.recordings_directory is None
+
+
+def test_loads_a_configured_sapi_voice(tmp_path: Path):
+    text = FULL.replace('tts = "none"', 'tts = "none"\nsapi_voice = "Microsoft Zira Desktop"')
+    config = load_config(write(tmp_path, text))
+    assert config.sapi_voice == "Microsoft Zira Desktop"
+
+
+@pytest.mark.parametrize("value", ["42", "true", "[]"])
+def test_sapi_voice_must_be_a_string(tmp_path: Path, value: str):
+    text = FULL.replace('tts = "none"', f'tts = "none"\nsapi_voice = {value}')
+    with pytest.raises(ConfigError, match="voice.sapi_voice must be a string"):
+        load_config(write(tmp_path, text))
+
+
+def test_present_sapi_voice_cannot_be_null():
+    with pytest.raises(ConfigError, match="voice.sapi_voice must be a string"):
+        parse_config({"device": {"transport": "usb:0"}, "phap": {"token": "t"}, "voice": {"sapi_voice": None}})
 
 
 def test_loads_absolute_recordings_directory(tmp_path: Path):
