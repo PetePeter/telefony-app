@@ -3,8 +3,10 @@
 import asyncio
 
 import pytest
+from bumble import hfp
 
 from telefony_app.bt.bluetooth_phone import BluetoothPhone
+from telefony_app.bt.call_state import CallState
 from telefony_app.phone import PhoneError
 from tests.bt.test_hf_line import connect
 
@@ -77,14 +79,30 @@ async def test_call_recording_id_is_set_before_dial():
     line.stop()
 
 
-async def test_sco_loss_ends_the_service_call_as_link_lost():
-    _, line = await connect()
+async def test_sco_loss_keeps_service_call_until_hfp_call_indicator_ends_it():
+    ag, line = await connect()
     phone, events = BluetoothPhone(line, line.protocol.dlc, None, None), Events()
-    phone.attach(events)
-    assert line.on_audio_link_lost is not None
-    line.on_audio_link_lost()
-    assert events.call_states == [("ended", "link_lost")]
-    line.stop()
+    phone.events = events
+    phone._watch_incoming = lambda: None
+    hangups = []
+    ag.on(ag.EVENT_HANG_UP, lambda: hangups.append(True))
+    try:
+        ag.update_ag_indicator(hfp.AgIndicator.CALL, 1)
+        await line.wait_for(CallState.ACTIVE, 1)
+        line._on_sco_disconnection(0x13)
+
+        assert line.tracker.state is CallState.ACTIVE
+        assert events.call_states == [("active", None)]
+        assert hangups == []
+
+        ag.update_ag_indicator(hfp.AgIndicator.CALL, 0)
+        await line.wait_for(CallState.ENDED, 1)
+        assert events.call_states == [("active", None), ("ended", "remote")]
+        assert hangups == []
+    finally:
+        phone._stop("incoming")
+        phone._stop("listen")
+        line.stop()
 
 
 async def test_phone_without_message_access_fails_sms_as_a_phone_error():

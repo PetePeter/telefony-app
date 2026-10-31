@@ -7,8 +7,8 @@ from typing import cast
 
 import numpy as np
 import pytest
-from bumble import hfp, rfcomm
-from bumble.device import ScoLink
+from bumble import hci, hfp, rfcomm
+from bumble.device import Connection, Device, ScoLink
 from bumble.testing.test_utils import TwoDevices
 from bumble.hci import HCI_SynchronousDataPacket
 
@@ -98,32 +98,89 @@ async def test_active_call_records_at_the_audio_pump_and_finalizes_normally(tmp_
         line.stop()
 
 
-async def test_sco_disconnect_finalizes_partial_and_reports_link_lost(tmp_path):
+async def test_sco_disconnect_and_reconnect_keep_call_and_audio_until_hfp_ends_it(tmp_path):
+    ag, line = await connect(recording_directory=tmp_path)
+    accepted = []
+    sent = []
+
+    class FakeConnection:
+        peer_address = "phone"
+
+        def __init__(self):
+            self.handlers = {}
+            self.device = SimpleNamespace(
+                host=SimpleNamespace(supports_command=lambda _: False),
+                send_async_command=lambda command: accepted.append(command),
+            )
+
+        def on(self, event, callback):
+            self.handlers[event] = callback
+
+        def cancel_on_disconnection(self, task):
+            pass
+
+        def emit(self, event, *args):
+            self.handlers[event](*args)
+
     class Link:
         def __init__(self):
-            self.device = SimpleNamespace(host=SimpleNamespace(send_sco_sdu=lambda **kwargs: None))
+            self.device = SimpleNamespace(host=SimpleNamespace(send_sco_sdu=lambda **kwargs: sent.append(kwargs)))
             self.handlers = {}
             self.sink = None
 
         def on(self, event, callback):
             self.handlers[event] = callback
 
-    _, line = await connect(recording_directory=tmp_path)
-    lost = []
-    line.on_audio_link_lost = lambda: lost.append(True)
-    line.set_recording_id("partial")
-    line.tracker.state = CallState.ACTIVE
-    line._on_state(CallState.ACTIVE)
-    link = Link()
-    line._on_sco_connection(cast(ScoLink, link))
-    line.pump.on_packet(np.array([3, 4], dtype=np.int16).tobytes(), HCI_SynchronousDataPacket.Status.CORRECTLY_RECEIVED_DATA)
-    link.handlers[ScoLink.EVENT_DISCONNECTION](0x13)
+    def send_audio(link, sample):
+        packet = SimpleNamespace(
+            data=np.full(160, sample, dtype=np.int16).tobytes(),
+            packet_status=HCI_SynchronousDataPacket.Status.CORRECTLY_RECEIVED_DATA,
+            connection_handle=1,
+        )
+        link.sink(packet)
 
     try:
-        assert lost == [True]
+        connection = FakeConnection()
+        line.attach_sco(cast(Connection, connection))
+        line.set_recording_id("reconnected")
+        frames = []
+        line.set_live_audio_callback(frames.append)
+
+        ag.update_ag_indicator(hfp.AgIndicator.CALL_SETUP, 2)
+        await line.wait_for(CallState.DIALING, 1)
+        ag.update_ag_indicator(hfp.AgIndicator.CALL_SETUP, 3)
+        await line.wait_for(CallState.ALERTING, 1)
+        connection.emit(Device.EVENT_SCO_REQUEST, hci.HCI_Connection_Complete_Event.LinkType.ESCO)
+        first = Link()
+        connection.emit(Device.EVENT_SCO_CONNECTION, cast(ScoLink, first))
+        first.handlers[ScoLink.EVENT_DISCONNECTION](0x13)
+        assert line.tracker.state is CallState.ALERTING
+
+        ag.update_ag_indicator(hfp.AgIndicator.CALL, 1)
+        await line.wait_for(CallState.ACTIVE, 1)
+        connection.emit(Device.EVENT_SCO_REQUEST, hci.HCI_Connection_Complete_Event.LinkType.ESCO)
+        second = Link()
+        connection.emit(Device.EVENT_SCO_CONNECTION, cast(ScoLink, second))
+        send_audio(second, 3)
+        second.handlers[ScoLink.EVENT_DISCONNECTION](0x13)
+        assert line.tracker.state is CallState.ACTIVE
+        assert line.recording_id == "reconnected"
+
+        connection.emit(Device.EVENT_SCO_REQUEST, hci.HCI_Connection_Complete_Event.LinkType.ESCO)
+        third = Link()
+        connection.emit(Device.EVENT_SCO_CONNECTION, cast(ScoLink, third))
+        send_audio(third, 4)
+        assert len(frames) == 2
+        assert len(accepted) == 3
+        assert len(sent) == 2
+
+        ag.update_ag_indicator(hfp.AgIndicator.CALL, 0)
+        await line.wait_for(CallState.ENDED, 1)
         assert line.tracker.state is CallState.ENDED
-        with wave.open(str(tmp_path / "partial.wav"), "rb") as wav:
-            assert np.frombuffer(wav.readframes(2), dtype="<i2").reshape(-1, 2).tolist() == [[3, 0], [4, 0]]
+        assert line.recording_id is None
+        with wave.open(str(tmp_path / "reconnected.wav"), "rb") as wav:
+            recorded = np.frombuffer(wav.readframes(wav.getnframes()), dtype="<i2").reshape(-1, 2)
+            assert recorded.tolist() == [[3, 0]] * 160 + [[4, 0]] * 160
     finally:
         line.stop()
 

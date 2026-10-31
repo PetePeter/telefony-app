@@ -45,7 +45,6 @@ class BluetoothPhone(Phone):
         line.set_live_audio_callback(self._live_audio_callback)
         self._contacts: list[Contact] | None = None  # the phone may have changed them while we were away
         line.on_note = self._on_note
-        line.on_audio_link_lost = self._on_audio_link_lost
         line.pump.on_dtmf = self._on_dtmf
         connection = self._connection
         connection.on(Connection.EVENT_DISCONNECTION, lambda reason: self._on_disconnect(connection))
@@ -177,11 +176,6 @@ class BluetoothPhone(Phone):
     def _on_dtmf(self, digit: str) -> None:
         if self.events:
             self.events.dtmf(digit)
-
-    def _on_audio_link_lost(self) -> None:
-        self._stop("listen")
-        if self.events:
-            self.events.call_state("ended", "link_lost")
 
     def _on_disconnect(self, connection: Connection) -> None:
         if connection is not self._connection:  # a link we already replaced

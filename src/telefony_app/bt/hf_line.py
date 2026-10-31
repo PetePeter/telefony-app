@@ -62,7 +62,6 @@ class HfLine:
         self._recording_id: str | None = None
         self._recorder: WavRecorder | None = None
         self.pump.on_recording_frame = self._record_frame
-        self.on_audio_link_lost: Callable[[], None] | None = None
         self._changed = asyncio.Event()
         self._audio = asyncio.Event()
         self._task: asyncio.Task | None = None
@@ -322,13 +321,7 @@ class HfLine:
 
     def _on_sco_disconnection(self, reason: int = 0) -> None:
         log.warning("SCO audio link dropped (reason %d)", reason)
-        if self.tracker.state is not CallState.ACTIVE:
-            return
-        self._finish_recording()
-        self._recording_id = None
-        if self.on_audio_link_lost:
-            self.on_audio_link_lost()
-        self.tracker._end()
+        # The audio bearer can be renegotiated without ending the HFP call.
 
     async def _next_audio(self) -> None:
         self._audio.clear()
