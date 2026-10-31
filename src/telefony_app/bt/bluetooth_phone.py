@@ -14,6 +14,7 @@ from telefony_app.bt.call_state import CallEnded, CallState
 from telefony_app.bt.dialing import normalize_number
 from telefony_app.bt.hf_line import HfLine, LinkLost
 from telefony_app.bt.map_client import map_session
+from telefony_app.bt.obex import ObexError
 from telefony_app.bt.pbap import pull_call_log, pull_contacts
 from telefony_app.phone import CallLogEntry, Contact, LinkDown, Phone, PhoneError, PhoneEvents, SmsMessage
 from telefony_app.voice import Tts, WhisperStt
@@ -143,7 +144,7 @@ class BluetoothPhone(Phone):
         try:
             async with map_session(self._connection, self.dlc.multiplexer) as session:
                 yield session
-        except (OSError, RuntimeError) as failed:
+        except (OSError, RuntimeError, LookupError, ObexError) as failed:  # refused or not offered, e.g. iOS before Show Notifications
             raise PhoneError(str(failed)) from None
 
     # --- what the phone reports ---

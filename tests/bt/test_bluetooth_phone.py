@@ -2,7 +2,10 @@
 
 import asyncio
 
+import pytest
+
 from telefony_app.bt.bluetooth_phone import BluetoothPhone
+from telefony_app.phone import PhoneError
 from tests.bt.test_hf_line import connect
 
 
@@ -81,4 +84,13 @@ async def test_sco_loss_ends_the_service_call_as_link_lost():
     assert line.on_audio_link_lost is not None
     line.on_audio_link_lost()
     assert events.call_states == [("ended", "link_lost")]
+    line.stop()
+
+
+async def test_phone_without_message_access_fails_sms_as_a_phone_error():
+    _, line = await connect()  # the fake AG offers no MAP server
+    phone = BluetoothPhone(line, line.protocol.dlc, None, None)
+
+    with pytest.raises(PhoneError):
+        await phone.sms_list(5)
     line.stop()
