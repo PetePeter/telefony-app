@@ -83,11 +83,11 @@ Edit `telefony.toml`:
 
 The first time, the PC shows up as **telefony**. On the phone: Settings → Bluetooth → pair **telefony**. On an **iPhone**, then tap ⓘ next to telefony and turn on:
 - **Show Notifications** (needed for SMS; without it MAP is refused with `0xC3 Forbidden`)
-- **Sync Contacts** (needed for contacts over PBAP)
+- **Sync Contacts** (needed for contacts over PBAP). iOS only shows this switch after a device has asked for the phonebook; telefony asks once each time it connects, so the switch appears a few seconds after the first connect.
 
 The pairing is remembered; later runs reconnect by themselves.
 
-**Verify:** the log shows `phone connected` and then `PhAP listening on ws://127.0.0.1:7781/phap`. `phone refused caller ID notifications (AT+CLIP)` is normal on iPhones.
+**Verify:** the log shows `phone connected` and then `PhAP listening on ws://127.0.0.1:7781/phap`. `phone refused caller ID notifications (AT+CLIP)` should not appear (see Troubleshooting).
 
 ## 7. Optional: Piper voice
 
@@ -143,4 +143,6 @@ Call the paired phone from an allowlisted number. The agent answers and greets y
 | Calls connect but there is no audio | WinUSB instead of libusbK, or a missing `+sco=2` in the transport. |
 | The phone pairs but never reconnects | The phone forgot the pairing: remove telefony on the phone and pair again. |
 | SMS tools fail on an iPhone | Show Notifications is off for telefony (step 6). |
+| `phone refused caller ID notifications (AT+CLIP)`; incoming calls show no number | The HF did not advertise *CLI presentation* in `AT+BRSF`; iOS then answers `AT+CLIP=1` with `ERROR`. `HF_CONFIGURATION` in `bt/hf_line.py` must include `HfFeature.CLI_PRESENTATION_CAPABILITY`. Contact sharing does not affect caller ID. |
+| The link drops every 30-60 s with `dropped (reason 8)` | Supervision timeout: the radio went silent. Re-pair the phone, turn off USB selective suspend (`powercfg`, USB settings), and keep the dongle away from USB 3 ports. telefony also polls the link every 5 s (`bt/link.py`). |
 | The agent never answers | The caller is not on the allowlist, or the caller ID is withheld (private numbers are rejected). |
