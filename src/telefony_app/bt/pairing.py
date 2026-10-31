@@ -74,8 +74,9 @@ class _SetupDelegate(pairing.PairingDelegate):
 class PairingController:
     """Own one discoverability window and its Numeric Comparison decision."""
 
-    def __init__(self, device: Device) -> None:
+    def __init__(self, device: Device, device_name: str = "telefony") -> None:
         self.device = device
+        self.device_name = device_name
         self._ready = False
         self._session: _Session | None = None
         self._lock = asyncio.Lock()
@@ -90,11 +91,11 @@ class PairingController:
         self._require_ready()
         session = self._session
         if session is None:
-            return {"state": "idle", "deviceName": "telefony"}
+            return {"state": "idle", "deviceName": self.device_name}
         result: dict[str, object] = {
             "pairingId": session.pairing_id,
             "state": session.state,
-            "deviceName": "telefony",
+            "deviceName": self.device_name,
             "expiresAt": session.expires_at,
         }
         if session.state == "awaiting-confirmation":
@@ -128,7 +129,7 @@ class PairingController:
             return {
                 "pairingId": session.pairing_id,
                 "state": session.state,
-                "deviceName": "telefony",
+                "deviceName": self.device_name,
                 "expiresAt": session.expires_at,
             }
 

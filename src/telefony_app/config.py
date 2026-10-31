@@ -35,6 +35,7 @@ class Config:
     web_port: int = 7782
     web_token: str | None = None  # no [web] admin_token: no web UI
     recordings_directory: Path | None = None
+    device_name: str = "telefony"
 
 
 def load_config(path: Path) -> Config:
@@ -45,6 +46,7 @@ def load_config(path: Path) -> Config:
 def parse_config(raw: dict) -> Config:
     device, policy, phap, voice, web, recordings = (raw.get(k, {}) for k in ("device", "policy", "phap", "voice", "web", "recordings"))
     transport = _required(device, "transport", "device.transport")
+    device_name = _device_name(device.get("name", "telefony"))
     token = _required(phap, "token", "phap.token")
     fallback = policy.get("fallback_policy", "ring")
     if fallback not in ("ring", "reject"):
@@ -81,6 +83,7 @@ def parse_config(raw: dict) -> Config:
             country_code=policy.get("country_code", "+61"),
             outbound=outbound,
         ),
+        device_name=device_name,
         host=host,
         port=port,
         heartbeat_s=_number(phap, "heartbeat_s", 10, float, "phap"),
@@ -94,6 +97,16 @@ def parse_config(raw: dict) -> Config:
         web_token=web.get("admin_token") or None,
         recordings_directory=recording_directory,
     )
+
+
+def _device_name(value: object) -> str:
+    if not isinstance(value, str):
+        raise ConfigError("device.name must be a string")
+    name = value.strip() or "telefony"
+    encoded = name.encode("utf-8")
+    if len(encoded) > 248:
+        name = encoded[:248].decode("utf-8", errors="ignore")
+    return name
 
 
 def _loopback(bind: str, name: str) -> tuple[str, int]:

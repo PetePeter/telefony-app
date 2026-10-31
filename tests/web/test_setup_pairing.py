@@ -54,12 +54,22 @@ def pairing_id(value: dict[str, object]) -> str:
     return result
 
 
-def setup_pairing(web: Web) -> tuple[FakeDevice, PairingController]:
+def setup_pairing(web: Web, device_name: str = "telefony") -> tuple[FakeDevice, PairingController]:
     device = FakeDevice()
-    pairing = PairingController(cast(Device, device))
+    pairing = PairingController(cast(Device, device), device_name)
     pairing.mark_ready()
     web.app.pairing = pairing
     return device, pairing
+
+
+async def test_pairing_status_uses_the_configured_bluetooth_name(web: Web):
+    _, pairing = setup_pairing(web, "Timbre - Work")
+
+    assert pairing.status() == {"state": "idle", "deviceName": "Timbre - Work"}
+    started = await pairing.start(30)
+    assert started["deviceName"] == "Timbre - Work"
+    assert pairing.status()["deviceName"] == "Timbre - Work"
+    await pairing.close()
 
 
 async def test_pairing_window_contract_and_live_phap_session(web: Web):

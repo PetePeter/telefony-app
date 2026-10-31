@@ -49,6 +49,16 @@ def test_defaults_apply_to_optional_settings(tmp_path: Path):
     assert config.tts == "auto"
     assert config.sapi_voice is None
     assert config.recordings_directory is None
+    assert config.device_name == "telefony"
+
+
+def test_device_name_is_trimmed_and_capped_at_248_utf8_bytes():
+    configured = parse_config({
+        "device": {"transport": "usb:0", "name": f"  {'🧭' * 63}  "},
+        "phap": {"token": "t"},
+    })
+    assert configured.device_name == "🧭" * 62
+    assert len(configured.device_name.encode("utf-8")) == 248
 
 
 def test_loads_a_configured_sapi_voice(tmp_path: Path):

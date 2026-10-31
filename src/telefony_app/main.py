@@ -108,22 +108,26 @@ async def _page_until_back(device: Device, on_dlc: Callable[[rfcomm.DLC], None])
         await asyncio.sleep(RECONNECT_PAUSE_S)
 
 
+def make_device_configuration(config: Config) -> DeviceConfiguration:
+    return DeviceConfiguration(
+        name=config.device_name,
+        address=hci.Address("F0:F1:F2:F3:F4:F5"),
+        classic_enabled=True,
+        class_of_device=HANDS_FREE_CLASS_OF_DEVICE,
+        keystore="JsonKeyStore",  # keep the phone paired across runs
+    )
+
+
 async def run(config: Config, config_path: Path, mcp: bool) -> None:
     tts, stt = make_tts(config.tts, config.piper_model, config.sapi_voice), make_stt(config.stt_model)
     log.info("text-to-speech: %s; speech-to-text: %s", type(tts).__name__ if tts else "none", "whisper" if stt else "none")
     async with await open_transport(config.transport) as transport:
-        device_config = DeviceConfiguration(
-            name="telefony",
-            address=hci.Address("F0:F1:F2:F3:F4:F5"),
-            classic_enabled=True,
-            class_of_device=HANDS_FREE_CLASS_OF_DEVICE,
-            keystore="JsonKeyStore",  # keep the phone paired across runs
-        )
+        device_config = make_device_configuration(config)
         if getattr(transport.sink, "isochronous_out", None) is not None:
             UsbScoStreamer(transport.sink)
         device = Device.from_config_with_hci(device_config, transport.source, transport.sink)
         async with contextlib.AsyncExitStack() as stack:
-            pairing_controller = PairingController(device) if config.web_token else None
+            pairing_controller = PairingController(device, config.device_name) if config.web_token else None
             if pairing_controller is not None:
                 stack.push_async_callback(pairing_controller.close)
             web = None
