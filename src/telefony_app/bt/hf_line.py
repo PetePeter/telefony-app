@@ -33,6 +33,7 @@ _ACTIVE_AND_HELD = 1  # callheld indicator: one call active, another on hold
 # CVSD only for now: the controller transcodes, so the host sees 8 kHz linear PCM.
 HF_CONFIGURATION = hfp.HfConfiguration(
     supported_hf_features=[
+        hfp.HfFeature.CLI_PRESENTATION_CAPABILITY,  # without it iOS answers AT+CLIP=1 with ERROR: no caller ID
         hfp.HfFeature.REMOTE_VOLUME_CONTROL,
         hfp.HfFeature.ENHANCED_CALL_STATUS,
         hfp.HfFeature.THREE_WAY_CALLING,

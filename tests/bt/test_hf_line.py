@@ -452,3 +452,10 @@ async def test_send_dtmf_sends_one_vts_per_digit_and_pauses_on_comma(phone_and_l
     await asyncio.wait_for(line.send_dtmf("1,2#*", pause_s=0.2), 3)
     assert sent == ["1", "2", "#", "*"]
     assert loop.time() - started >= 0.2
+
+
+async def test_phone_sees_caller_id_support_so_it_accepts_at_clip():
+    ag, line = await connect()  # iOS answers AT+CLIP=1 with ERROR unless the HF advertises CLI presentation
+
+    assert ag.supports_hf_feature(hfp.HfFeature.CLI_PRESENTATION_CAPABILITY)
+    line.stop()
