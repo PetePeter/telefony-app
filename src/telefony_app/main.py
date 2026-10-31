@@ -21,6 +21,7 @@ from telefony_app import __version__
 from telefony_app.bt.autoconnect import connect_bonded_phone
 from telefony_app.bt.bluetooth_phone import BluetoothPhone
 from telefony_app.bt.hf_line import HF_CONFIGURATION, HfLine
+from telefony_app.bt.link import keep_links_active
 from telefony_app.bt.map_client import make_mns_sdp_records
 from telefony_app.bt.pairing import PairingController
 from telefony_app.bt.sco_stream import UsbScoStreamer
@@ -69,6 +70,7 @@ async def listen_for_phone(
         SDP_HANDLE: hfp.make_hf_sdp_records(SDP_HANDLE, channel, HF_CONFIGURATION),
         MNS_SDP_HANDLE: make_mns_sdp_records(MNS_SDP_HANDLE, mns_channel),
     }
+    keep_links_active(device)
     await device.power_on()
     await device.set_connectable(True)
     if pairing_controller is None:  # preserve the legacy first-pair path when the admin API is disabled
