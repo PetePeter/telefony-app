@@ -2,7 +2,8 @@ from pathlib import Path
 
 import pytest
 
-from telefony_app.config import ConfigError, load_config, parse_config
+from telefony_app.config import ConfigError, describe_setup_fields, load_config, parse_config
+from telefony_app.voice import make_stt
 
 
 def write(tmp_path: Path, text: str) -> Path:
@@ -50,6 +51,33 @@ def test_defaults_apply_to_optional_settings(tmp_path: Path):
     assert config.sapi_voice is None
     assert config.recordings_directory is None
     assert config.device_name == "telefony"
+
+
+def test_setup_field_defaults_match_parsed_config_defaults():
+    config = parse_config({"device": {"transport": "usb:0"}, "phap": {"token": "t"}})
+    actual_defaults = {
+        "voice.tts": config.tts,
+        "voice.piper_model": config.piper_model,
+        "voice.sapi_voice": config.sapi_voice,
+        "voice.stt_model": config.stt_model,
+    }
+
+    fields = describe_setup_fields()
+
+    assert {item["key"]: item["default"] for item in fields} == actual_defaults
+    stt = next(item for item in fields if item["key"] == "voice.stt_model")
+    assert "none" in stt["choices"]
+
+
+def test_stt_none_disables_runtime_and_empty_keeps_legacy_off_behavior():
+    base = {"device": {"transport": "usb:0"}, "phap": {"token": "t"}}
+    disabled = parse_config(base | {"voice": {"stt_model": "none"}})
+    legacy_empty = parse_config(base | {"voice": {"stt_model": ""}})
+
+    assert disabled.stt_model is None
+    assert make_stt(disabled.stt_model) is None
+    assert legacy_empty.stt_model == ""
+    assert make_stt(legacy_empty.stt_model) is None
 
 
 def test_device_name_is_trimmed_and_capped_at_248_utf8_bytes():

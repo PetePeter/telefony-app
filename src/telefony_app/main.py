@@ -2,11 +2,13 @@
 
   telefony-app telefony.toml          # PhAP server for Helm or any agent host
   telefony-app telefony.toml --mcp    # MCP on stdio instead, for a plain LLM CLI that launches it
+  telefony-app describe-setup --json  # Describe operator-configurable provider settings
 """
 
 import argparse
 import asyncio
 import contextlib
+import json
 import logging
 import sys
 from collections.abc import Callable
@@ -25,7 +27,7 @@ from telefony_app.bt.link import keep_links_alive
 from telefony_app.bt.map_client import make_mns_sdp_records
 from telefony_app.bt.pairing import PairingController
 from telefony_app.bt.sco_stream import UsbScoStreamer
-from telefony_app.config import Config, load_config
+from telefony_app.config import SETUP_VERSION, Config, describe_setup_fields, load_config
 from telefony_app.mcp_projection import McpProjection
 from telefony_app.phap.server import PhapServer
 from telefony_app.service import PhoneService
@@ -155,12 +157,26 @@ async def run(config: Config, config_path: Path, mcp: bool) -> None:
                 await asyncio.get_running_loop().create_future()
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
+    arguments = sys.argv[1:] if argv is None else argv
+    if arguments[:1] == ["describe-setup"]:
+        setup_parser = argparse.ArgumentParser(prog="telefony-app describe-setup")
+        setup_parser.add_argument("--json", action="store_true", required=True, help="print the setup manifest as JSON")
+        setup_parser.parse_args(arguments[1:])
+        manifest = {
+            "provider": "telefony-app",
+            "setupVersion": SETUP_VERSION,
+            "providerVersion": __version__,
+            "fields": describe_setup_fields(),
+        }
+        print(json.dumps(manifest, ensure_ascii=False, indent=2))
+        return
+
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--version", action="version", version=__version__)
     parser.add_argument("config", type=Path, help="TOML config (see telefony.example.toml)")
     parser.add_argument("--mcp", action="store_true", help="serve MCP on stdio instead of PhAP")
-    args = parser.parse_args()
+    args = parser.parse_args(arguments)
     # Logs go to stderr: with --mcp, stdout carries the MCP protocol.
     logging.basicConfig(level=logging.INFO, stream=sys.stderr, format="%(asctime)s %(name)s %(message)s")
     try:

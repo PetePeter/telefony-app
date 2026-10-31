@@ -7,11 +7,55 @@ import ipaddress
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from telefony_app.bt.dialing import normalize_number
 from telefony_app.service import Policy
 
 TTS_BACKENDS = ("auto", "piper", "sapi", "none")
+TTS_DEFAULT = "auto"
+PIPER_MODEL_DEFAULT = None
+SAPI_VOICE_DEFAULT = None
+STT_MODEL_DEFAULT = "small.en"
+STT_DISABLED = "none"
+SETUP_VERSION = 1
+
+VOICE_SETUP_FIELDS: tuple[dict[str, Any], ...] = (
+    {
+        "key": "voice.tts",
+        "label": "Text-to-speech mode",
+        "type": "enum",
+        "choices": TTS_BACKENDS,
+        "default": TTS_DEFAULT,
+        "restartRequired": True,
+        "help": "Empty uses the default auto mode; none disables speech output.",
+    },
+    {
+        "key": "voice.piper_model",
+        "label": "Piper model path",
+        "type": "path",
+        "default": PIPER_MODEL_DEFAULT,
+        "restartRequired": True,
+        "help": "Path to the Piper ONNX model; leave empty to use the provider default.",
+    },
+    {
+        "key": "voice.sapi_voice",
+        "label": "SAPI voice",
+        "type": "string",
+        "default": SAPI_VOICE_DEFAULT,
+        "restartRequired": True,
+        "help": "Installed Windows SAPI voice name; leave empty to use the Windows default voice.",
+    },
+    {
+        "key": "voice.stt_model",
+        "label": "Speech-to-text model (Whisper)",
+        "type": "string",
+        "choices": (STT_DISABLED,),
+        "default": STT_MODEL_DEFAULT,
+        "restartRequired": True,
+        "help": "Whisper model name or path. Use none to disable; empty retains the legacy off behavior.",
+    },
+)
 
 
 class ConfigError(ValueError):
@@ -27,10 +71,10 @@ class Config:
     port: int = 7781
     heartbeat_s: float = 10
     event_buffer: int = 1000
-    tts: str = "auto"
-    sapi_voice: str | None = None
-    piper_model: str | None = None
-    stt_model: str | None = "small.en"
+    tts: str = TTS_DEFAULT
+    sapi_voice: str | None = SAPI_VOICE_DEFAULT
+    piper_model: str | None = PIPER_MODEL_DEFAULT
+    stt_model: str | None = STT_MODEL_DEFAULT
     web_host: str = "127.0.0.1"
     web_port: int = 7782
     web_token: str | None = None  # no [web] admin_token: no web UI
@@ -41,6 +85,16 @@ class Config:
 def load_config(path: Path) -> Config:
     with path.open("rb") as f:
         return parse_config(tomllib.load(f))
+
+
+def describe_setup_fields() -> list[dict[str, Any]]:
+    fields = []
+    for setting in VOICE_SETUP_FIELDS:
+        descriptor = setting.copy()
+        if "choices" in descriptor:
+            descriptor["choices"] = list(descriptor["choices"])
+        fields.append(descriptor)
+    return fields
 
 
 def parse_config(raw: dict) -> Config:
@@ -54,12 +108,12 @@ def parse_config(raw: dict) -> Config:
     outbound = policy.get("outbound", "allowlist")
     if outbound not in ("allowlist", "all"):
         raise ConfigError(f"policy.outbound must be allowlist or all, not {outbound!r}")
-    tts = voice.get("tts", "auto")
+    tts = voice.get("tts", TTS_DEFAULT)
     if tts not in TTS_BACKENDS:
         raise ConfigError(f"voice.tts must be one of {', '.join(TTS_BACKENDS)}, not {tts!r}")
     if "sapi_voice" in voice and not isinstance(voice["sapi_voice"], str):
         raise ConfigError("voice.sapi_voice must be a string")
-    sapi_voice = voice.get("sapi_voice")
+    sapi_voice = voice.get("sapi_voice", SAPI_VOICE_DEFAULT)
     allowlist = list(policy.get("allowlist", []))
     for number in allowlist:
         try:
@@ -90,13 +144,17 @@ def parse_config(raw: dict) -> Config:
         event_buffer=_number(phap, "event_buffer", 1000, int, "phap"),
         tts=tts,
         sapi_voice=sapi_voice,
-        piper_model=voice.get("piper_model"),
-        stt_model=voice.get("stt_model", "small.en"),
+        piper_model=voice.get("piper_model", PIPER_MODEL_DEFAULT),
+        stt_model=_stt_model(voice.get("stt_model", STT_MODEL_DEFAULT)),
         web_host=web_host,
         web_port=web_port,
         web_token=web.get("admin_token") or None,
         recordings_directory=recording_directory,
     )
+
+
+def _stt_model(value: Any) -> str | None:
+    return None if value == STT_DISABLED else value
 
 
 def _device_name(value: object) -> str:
