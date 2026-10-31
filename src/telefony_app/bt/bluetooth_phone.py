@@ -35,6 +35,7 @@ class BluetoothPhone(Phone):
         self._ringing = False  # the current call came in rather than going out
         self._tasks: dict[str, asyncio.Task] = {}
         self._live_audio_callback: Callable[[bytes], None] | None = None
+        self._obex = asyncio.Lock()  # one OBEX session at a time: bumble opens one DLC at a time on the shared multiplexer
         self._bind(line, dlc)
 
     def _bind(self, line: HfLine, dlc: rfcomm.DLC) -> None:
@@ -48,6 +49,7 @@ class BluetoothPhone(Phone):
         line.pump.on_dtmf = self._on_dtmf
         connection = self._connection
         connection.on(Connection.EVENT_DISCONNECTION, lambda reason: self._on_disconnect(connection))
+        self._start("contacts", self._pull_contacts())  # also makes iOS offer its "Sync Contacts" switch
 
     def relink(self, line: HfLine, dlc: rfcomm.DLC) -> None:
         """Carry on over a new HFP line after the old link dropped."""
@@ -130,19 +132,27 @@ class BluetoothPhone(Phone):
         return SmsMessage(handle, message.sender, None, message.text, _iso(""))
 
     async def contacts(self) -> list[Contact]:
-        if self._contacts is None:
-            self._contacts = await pull_contacts(self._connection, self.dlc.multiplexer)
+        async with self._obex:
+            if self._contacts is None:
+                self._contacts = await pull_contacts(self._connection, self.dlc.multiplexer)
         return self._contacts or []
 
+    async def _pull_contacts(self) -> None:
+        try:
+            await self.contacts()
+        except (OSError, RuntimeError, LookupError, ObexError) as failed:
+            log.info("phone contacts not available yet: %s", failed)
+
     async def call_log(self, limit: int) -> list[CallLogEntry]:
-        return await pull_call_log(self._connection, self.dlc.multiplexer, limit)
+        async with self._obex:
+            return await pull_call_log(self._connection, self.dlc.multiplexer, limit)
 
     @contextlib.asynccontextmanager
     async def _map(self):
         if not self.link_up:
             raise LinkDown("Bluetooth link to the phone is down")
         try:
-            async with map_session(self._connection, self.dlc.multiplexer) as session:
+            async with self._obex, map_session(self._connection, self.dlc.multiplexer) as session:
                 yield session
         except (OSError, RuntimeError, LookupError, ObexError) as failed:  # refused or not offered, e.g. iOS before Show Notifications
             raise PhoneError(str(failed)) from None
