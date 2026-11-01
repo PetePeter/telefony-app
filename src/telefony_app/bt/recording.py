@@ -8,6 +8,13 @@ import numpy as np
 
 from telefony_app.phone import validate_recording_id
 
+_MIN_ACTIVE_RMS = 512
+_MIN_ACTIVE_PEAK = 1024
+_MAX_GAIN = 4.0
+_NORMALISE_WINDOW_MS = 20
+_NORMALISE_RAMP_MS = 5
+_NORMALISE_BATCH_WINDOWS = 4096
+
 
 class WavRecorder:
     """Pair receive/transmit PCM into a stereo WAV, published only after its header is complete."""
@@ -62,6 +69,7 @@ class WavRecorder:
                 self.part_path.unlink(missing_ok=True)
                 self._finished = True
                 return None
+            self._normalise_sides()
             if self.final_path.exists():
                 raise FileExistsError(self.final_path)
             self.part_path.rename(self.final_path)
@@ -70,6 +78,89 @@ class WavRecorder:
         except BaseException:
             self.abort()
             raise
+
+    def _normalise_sides(self) -> None:
+        """Match active receive/transmit RMS in the saved WAV, with bounded gain."""
+        window_frames = max(1, self._sample_rate * _NORMALISE_WINDOW_MS // 1000)
+        full_windows, tail_frames = divmod(self._frame_count, window_frames)
+        window_count = full_windows + bool(tail_frames)
+        active_windows = np.zeros((window_count, 2), dtype=bool)
+        totals = np.zeros(2, dtype=np.float64)
+        active_frames = np.zeros(2, dtype=np.int64)
+        peaks = np.zeros(2, dtype=np.int32)
+        audio = np.memmap(self.part_path, dtype="<i2", mode="r+", offset=44, shape=(self._frame_count, 2))
+
+        def measure(windows: np.ndarray, first_window: int) -> None:
+            values = windows.astype(np.float64)
+            sums = np.einsum("ijk,ijk->ik", values, values, optimize=True)
+            rms = np.sqrt(sums / windows.shape[1])
+            peak = np.max(np.abs(windows.astype(np.int32)), axis=1)
+            active = (rms >= _MIN_ACTIVE_RMS) & (peak >= _MIN_ACTIVE_PEAK)
+            count = windows.shape[0]
+            active_windows[first_window:first_window + count] = active
+            totals[:] += np.sum(np.where(active, sums, 0.0), axis=0)
+            active_frames[:] += np.sum(active, axis=0) * windows.shape[1]
+            peaks[:] = np.maximum(peaks, np.max(np.where(active, peak, 0), axis=0))
+
+        for first in range(0, full_windows, _NORMALISE_BATCH_WINDOWS):
+            count = min(_NORMALISE_BATCH_WINDOWS, full_windows - first)
+            start_frame = first * window_frames
+            end_frame = (first + count) * window_frames
+            measure(audio[start_frame:end_frame].reshape(count, window_frames, 2), first)
+        if tail_frames:
+            measure(audio[full_windows * window_frames:].reshape(1, tail_frames, 2), full_windows)
+
+        active = active_frames > 0
+        if not np.any(active):
+            audio.flush()
+            return
+
+        rms = np.zeros(2, dtype=np.float64)
+        rms[active] = np.sqrt(totals[active] / active_frames[active])
+        target_rms = float(np.mean(rms[active]))
+        gains = np.ones(2, dtype=np.float64)
+        for side in range(2):
+            if active[side]:
+                gain = min(target_rms / rms[side], _MAX_GAIN)
+                gains[side] = min(gain, 32767.0 / peaks[side])
+
+        prior_active = np.vstack((np.zeros((1, 2), dtype=bool), active_windows[:-1]))
+        next_active = np.vstack((active_windows[1:], np.zeros((1, 2), dtype=bool)))
+        starts = active_windows & ~prior_active
+        ends = active_windows & ~next_active
+        ramp_frames = max(1, self._sample_rate * _NORMALISE_RAMP_MS // 1000)
+
+        def apply(windows: np.ndarray, first_window: int) -> None:
+            count = windows.shape[0]
+            for side, gain in enumerate(gains):
+                mask = active_windows[first_window:first_window + count, side]
+                if gain == 1.0 or not np.any(mask):
+                    continue
+                selected = np.flatnonzero(mask)
+                source = windows[selected, :, side].astype(np.float64)
+                scaled = source * gain
+                start_rows = np.flatnonzero(starts[first_window:first_window + count, side])
+                end_rows = np.flatnonzero(ends[first_window:first_window + count, side])
+                start_rows = np.searchsorted(selected, start_rows)
+                end_rows = np.searchsorted(selected, end_rows)
+                for row in start_rows:
+                    length = min(ramp_frames, windows.shape[1] // 2)
+                    if length:
+                        scaled[row, :length] = source[row, :length] * np.linspace(1.0, gain, length)
+                for row in end_rows:
+                    length = min(ramp_frames, windows.shape[1] // 2)
+                    if length:
+                        scaled[row, -length:] = source[row, -length:] * np.linspace(gain, 1.0, length)
+                windows[selected, :, side] = np.clip(np.rint(scaled), -32768, 32767).astype("<i2")
+
+        for first in range(0, full_windows, _NORMALISE_BATCH_WINDOWS):
+            count = min(_NORMALISE_BATCH_WINDOWS, full_windows - first)
+            start_frame = first * window_frames
+            end_frame = (first + count) * window_frames
+            apply(audio[start_frame:end_frame].reshape(count, window_frames, 2), first)
+        if tail_frames:
+            apply(audio[full_windows * window_frames:].reshape(1, tail_frames, 2), full_windows)
+        audio.flush()
 
     def abort(self) -> None:
         """Discard a failed capture without affecting call audio."""
