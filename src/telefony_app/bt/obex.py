@@ -97,6 +97,11 @@ async def find_rfcomm_channel(connection: Connection, service: core.UUID) -> int
     return None
 
 
+REPLY_TIMEOUT_S = 10.0
+"""How long the phone gets to answer one OBEX request or an RFCOMM disconnect. Without it, one unanswered
+request held the session (and the shared OBEX lock) open, and every later SMS poll timed out."""
+
+
 class ObexClient:
     """One OBEX session on an open RFCOMM DLC. Requests are strictly one at a time."""
 
@@ -121,8 +126,13 @@ class ObexClient:
         if self._connection_id is not None and packet.code != CONNECT:
             packet.headers.insert(0, (CONNECTION_ID, self._connection_id))
         self._dlc.write(encode(packet))
+        try:
+            async with asyncio.timeout(REPLY_TIMEOUT_S):
+                reply = await self._packets.get()
+        except TimeoutError:
+            raise ObexError(f"phone did not answer OBEX 0x{packet.code:02X}") from None
         # SETPATH responses carry no fixed fields; only CONNECT's does
-        return decode(await self._packets.get(), fields_length(packet.code) if packet.code == CONNECT else 0)
+        return decode(reply, fields_length(packet.code) if packet.code == CONNECT else 0)
 
     async def connect(self, target: bytes) -> None:
         fields = struct.pack(">BBH", OBEX_VERSION, 0, MAX_PACKET)
@@ -214,4 +224,14 @@ async def obex_session(
         yield client
         await client.disconnect()
     finally:
-        await dlc.disconnect()
+        await _close_dlc(multiplexer, dlc)
+
+
+async def _close_dlc(multiplexer: rfcomm.Multiplexer, dlc: rfcomm.DLC) -> None:
+    """Disconnect, or drop the DLC locally when the phone does not answer, so nothing half-closed piles up."""
+    try:
+        async with asyncio.timeout(REPLY_TIMEOUT_S):
+            await dlc.disconnect()
+    except (TimeoutError, core.InvalidStateError):
+        dlc.abort()
+        multiplexer.dlcs.pop(dlc.dlci, None)

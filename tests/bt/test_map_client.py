@@ -1,5 +1,6 @@
 """MAP list/read/send end-to-end over Bumble's in-memory radio link, against a fake Message Access Server."""
 
+import pytest
 from bumble import core
 from bumble.core import PhysicalTransport
 from bumble.link import LocalLink
@@ -64,3 +65,23 @@ async def test_phone_finds_our_notification_server_by_sdp():
     us.sdp_service_records = {0x00010002: make_mns_sdp_records(0x00010002, 7)}
     connection = await phone.connect(us.public_address, transport=PhysicalTransport.BR_EDR)
     assert await obex.find_rfcomm_channel(connection, core.BT_MESSAGE_NOTIFICATION_SERVER_SERVICE) == 7
+
+
+async def test_a_silent_phone_fails_the_request_and_the_next_session_still_works(monkeypatch):
+    # Seen live: one unanswered MAP request left the session open and every later SMS poll timed out for hours.
+    monkeypatch.setattr(obex, "REPLY_TIMEOUT_S", 0.2)
+    silent = True
+
+    def flaky(request):
+        if silent and request.code == obex.GET:
+            raise RuntimeError("phone stays silent")
+        return mas(request)
+
+    connection, _ = await phone_and_link(flaky)
+    with pytest.raises(obex.ObexError):
+        async with map_session(connection) as session:
+            await session.list_messages()
+
+    silent = False
+    async with map_session(connection) as session:
+        assert await session.list_messages()
