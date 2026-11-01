@@ -1649,6 +1649,18 @@
         "sayId"
       ]
     },
+    "CallSayFailedEvent": {
+      "type": "object",
+      "properties": {
+        "seq": { "type": "integer", "minimum": 1 },
+        "ts": { "type": "string", "format": "date-time" },
+        "type": { "const": "call.say.failed" },
+        "callId": { "type": "string" },
+        "sayId": { "type": "string" },
+        "reason": { "type": "string", "maxLength": 512 }
+      },
+      "required": ["seq", "ts", "type", "callId", "sayId", "reason"]
+    },
     "CallDtmfEvent": {
       "type": "object",
       "properties": {
@@ -1769,6 +1781,9 @@
         },
         {
           "$ref": "#/$defs/CallSpokenEvent"
+        },
+        {
+          "$ref": "#/$defs/CallSayFailedEvent"
         },
         {
           "$ref": "#/$defs/CallDtmfEvent"

@@ -50,3 +50,18 @@ def test_flush_returns_unterminated_speech_once():
     seg.feed(speech(500))
     assert len(seg.flush()) == 1
     assert seg.flush() == []
+
+
+def test_speech_onset_requires_220ms_of_contiguous_voiced_frames():
+    starts = []
+    seg = Segmenter(rate=RATE, min_speech_ms=200, on_speech_start=lambda: starts.append(True))
+
+    seg.feed(speech(200))
+    assert starts == []
+
+    seg.feed(silence(20))
+    seg.feed(speech(200))
+    assert starts == []
+
+    seg.feed(speech(20))
+    assert starts == [True]

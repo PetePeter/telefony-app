@@ -222,7 +222,9 @@ class PhoneService:
                 if call.state == "ended":  # the audio link went with the call
                     return "call ended"
                 log.exception("say %s failed", say_id)
-                return str(failed) or type(failed).__name__
+                reason = (str(failed) or type(failed).__name__)[:512]
+                self.events.emit("call.say.failed", callId=call.call_id, sayId=say_id, reason=reason)
+                return reason
             call.transcript.append({"speaker": "local", "text": text, "startMs": 0, "endMs": 0})
             self.events.emit("call.spoken", callId=call.call_id, sayId=say_id)
             return None

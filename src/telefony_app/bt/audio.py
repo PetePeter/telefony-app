@@ -57,6 +57,10 @@ class AudioPump:
     def queue_uplink(self, pcm: np.ndarray) -> None:
         self._uplink = np.concatenate([self._uplink, pcm.astype(np.int16)])
 
+    def clear_uplink(self) -> None:
+        """Discard queued speech after barge-in or a failed playback."""
+        self._uplink = np.zeros(0, dtype=np.int16)
+
     def set_live_audio_callback(self, callback: Callable[[bytes], None] | None) -> None:
         """Capture future 20 ms stereo PCM16LE frames; changing listeners drops partial audio."""
         self._live_audio_callback = callback

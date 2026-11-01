@@ -14,6 +14,7 @@ from bumble.hci import HCI_SynchronousDataPacket
 
 from telefony_app.bt.call_state import CallEnded, CallState
 from telefony_app.bt.hf_line import HF_CONFIGURATION, ConsultFailed, HfLine, LinkLost
+from telefony_app.bt import hf_line as hf_line_module
 
 AG_CONFIGURATION = hfp.AgConfiguration(
     supported_ag_features=[hfp.AgFeature.ENHANCED_CALL_STATUS, hfp.AgFeature.REJECT_CALL],
@@ -228,6 +229,32 @@ async def test_live_audio_callback_is_independent_of_recording(tmp_path):
         assert list(tmp_path.iterdir()) == []
     finally:
         line.set_live_audio_callback(None)
+        line.stop()
+
+
+async def test_timed_out_playback_discards_unconsumed_pcm(monkeypatch):
+    _, line = await connect()
+    monkeypatch.setattr(hf_line_module, "_AUDIO_GRACE_SECONDS", 0.01)
+    try:
+        with pytest.raises(TimeoutError):
+            await line.play(np.ones(160, dtype=np.int16))
+
+        assert line.pump.uplink_pending == 0
+    finally:
+        line.stop()
+
+
+async def test_stopping_playback_flushes_pcm_and_wakes_the_player():
+    _, line = await connect()
+    try:
+        playing = asyncio.create_task(line.play(np.ones(8000, dtype=np.int16)))
+        await asyncio.sleep(0.01)
+
+        line.stop_playback()
+
+        await asyncio.wait_for(playing, 1)
+        assert line.pump.uplink_pending == 0
+    finally:
         line.stop()
 
 

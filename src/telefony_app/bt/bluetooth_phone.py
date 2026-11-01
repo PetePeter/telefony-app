@@ -34,6 +34,7 @@ class BluetoothPhone(Phone):
         self._hung_up = False
         self._ringing = False  # the current call came in rather than going out
         self._tasks: dict[str, asyncio.Task] = {}
+        self._speech_generation = 0
         self._live_audio_callback: Callable[[bytes], None] | None = None
         self._obex = asyncio.Lock()  # one OBEX session at a time: bumble opens one DLC at a time on the shared multiplexer
         self._bind(line, dlc)
@@ -106,10 +107,17 @@ class BluetoothPhone(Phone):
     async def speak(self, text: str) -> None:
         if self.tts is None:
             raise PhoneError("no text-to-speech engine")
+        generation = self._speech_generation
         try:
-            await self._at(self.line.play(await self.tts.synthesize(text, self.line.rate)))
+            pcm = await self.tts.synthesize(text, self.line.rate)
+            if generation == self._speech_generation:
+                await self._at(self.line.play(pcm))
         except (OSError, RuntimeError, CallEnded, wave.Error) as failed:
             raise PhoneError(str(failed) or type(failed).__name__) from None
+
+    def _interrupt_speech(self) -> None:
+        self._speech_generation += 1
+        self.line.stop_playback()
 
     async def send_dtmf(self, digits: str) -> None:
         await self._at(self.line.send_dtmf(digits))
@@ -204,7 +212,7 @@ class BluetoothPhone(Phone):
         started = asyncio.get_running_loop().time()
         with contextlib.suppress(LinkLost, CallEnded):
             while self.line.tracker.state is CallState.ACTIVE:
-                pcm = await self.line.listen_utterance(_UTTERANCE_MAX_S)
+                pcm = await self.line.listen_utterance(_UTTERANCE_MAX_S, self._interrupt_speech)
                 if not len(pcm):
                     continue
                 text = await asyncio.to_thread(self.stt.transcribe, pcm)

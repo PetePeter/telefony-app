@@ -331,6 +331,22 @@ async def test_say_reports_spoken(connect, phone: FakePhone):
     assert phone.spoken == ["hi"]
 
 
+async def test_say_failure_reports_failed_event(connect, phone: FakePhone):
+    client = await connect()
+    await client.hello()
+    call_id = (await client.request("call.dial", {"number": ALLOWED}))["result"]["callId"]
+    phone.remote_answers()
+    phone.failing["speak"] = PhoneError("TimeoutError")
+
+    say_id = (await client.request("call.say", {"callId": call_id, "text": "hi"}))["result"]["sayId"]
+    failed = await client.event("call.say.failed")
+
+    assert failed["callId"] == call_id
+    assert failed["sayId"] == say_id
+    assert failed["reason"] == "TimeoutError"
+    assert_compliant(failed, "Event")
+
+
 async def test_say_without_tts_is_unsupported(connect_with):
     phone = FakePhone(tts=False)
     client = await connect_with(phone)

@@ -1,13 +1,16 @@
 """BluetoothPhone surviving a dropped link: the same object is handed a new HFP line and works again."""
 
 import asyncio
+from typing import cast
 
+import numpy as np
 import pytest
-from bumble import hfp
+from bumble import hci, hfp
 
 from telefony_app.bt.bluetooth_phone import BluetoothPhone
 from telefony_app.bt.call_state import CallState
 from telefony_app.phone import PhoneError
+from telefony_app.voice import WhisperStt
 from tests.bt.test_hf_line import connect
 
 
@@ -15,6 +18,7 @@ class Events:
     def __init__(self) -> None:
         self.links: list[bool] = []
         self.call_states: list[tuple[str, str | None]] = []
+        self.utterances: list[str] = []
 
     def link(self, up: bool) -> None:
         self.links.append(up)
@@ -22,7 +26,8 @@ class Events:
     def ringing(self, number: str, name: str | None) -> None: ...
     def call_state(self, state: str, reason: str | None = None) -> None:
         self.call_states.append((state, reason))
-    def utterance(self, text: str, start_ms: int, end_ms: int) -> None: ...
+    def utterance(self, text: str, start_ms: int, end_ms: int) -> None:
+        self.utterances.append(text)
     def dtmf(self, digit: str) -> None: ...
     def sms_received(self, handle: str, number: str, text: str) -> None: ...
 
@@ -112,3 +117,51 @@ async def test_phone_without_message_access_fails_sms_as_a_phone_error():
     with pytest.raises(PhoneError):
         await phone.sms_list(5)
     line.stop()
+
+
+async def test_voiced_onset_interrupts_playback_and_still_reaches_stt():
+    class Tts:
+        async def synthesize(self, text: str, rate: int) -> np.ndarray:
+            return np.ones(rate * 20, dtype=np.int16)
+
+    class Stt:
+        def transcribe(self, pcm: np.ndarray) -> str:
+            return "Please answer this question."
+
+    _, line = await connect()
+    phone = BluetoothPhone(line, line.protocol.dlc, Tts(), cast(WhisperStt, Stt()))
+    events = Events()
+    phone._watch_incoming = lambda: None
+    phone.attach(events)
+    line.tracker.state = CallState.ACTIVE
+    phone._on_note("answered")
+
+    try:
+        speaking = asyncio.create_task(phone.speak("A long opening message."))
+        await until(lambda: line.pump.uplink_pending > 0)
+
+        voiced = np.full(160, 8000, dtype=np.int16).tobytes()
+        for _ in range(13):  # enough frames for a 220 ms VAD onset after DTMF buffering
+            line.pump.on_packet(voiced, hci.HCI_SynchronousDataPacket.Status.CORRECTLY_RECEIVED_DATA)
+            line._downlink_audio.set()
+            await asyncio.sleep(0.01)
+
+        await asyncio.wait_for(speaking, 1)
+        assert line.pump.uplink_pending == 0
+
+        for _ in range(12):
+            line.pump.on_packet(voiced, hci.HCI_SynchronousDataPacket.Status.CORRECTLY_RECEIVED_DATA)
+            line._downlink_audio.set()
+            await asyncio.sleep(0.01)
+        silence = bytes(160 * 2)
+        for _ in range(38):  # include DTMF decoder buffering after endpoint silence
+            line.pump.on_packet(silence, hci.HCI_SynchronousDataPacket.Status.CORRECTLY_RECEIVED_DATA)
+            line._downlink_audio.set()
+            await asyncio.sleep(0.01)
+
+        await until(lambda: bool(events.utterances))
+        assert events.utterances == ["Please answer this question."]
+    finally:
+        phone._stop("listen")
+        phone._stop("contacts")
+        line.stop()

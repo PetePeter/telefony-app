@@ -63,7 +63,8 @@ class HfLine:
         self._recorder: WavRecorder | None = None
         self.pump.on_recording_frame = self._record_frame
         self._changed = asyncio.Event()
-        self._audio = asyncio.Event()
+        self._uplink_audio = asyncio.Event()
+        self._downlink_audio = asyncio.Event()
         self._task: asyncio.Task | None = None
         self._caller: str | None = None  # untrusted caller ID of the ringing call
         self._caller_known = asyncio.Event()
@@ -253,21 +254,31 @@ class HfLine:
     async def play(self, pcm: np.ndarray) -> None:
         """Queue PCM at the link rate and wait until the controller has consumed it."""
         self.pump.queue_uplink(pcm)
-        async with asyncio.timeout(len(pcm) / self.rate + _AUDIO_GRACE_SECONDS):
-            while self.pump.uplink_pending:
-                await self._next_audio()
+        try:
+            async with asyncio.timeout(len(pcm) / self.rate + _AUDIO_GRACE_SECONDS):
+                while self.pump.uplink_pending:
+                    await self._next_audio(self._uplink_audio)
+        except (TimeoutError, asyncio.CancelledError):
+            self.stop_playback()
+            raise
 
-    async def listen_utterance(self, max_seconds: float) -> np.ndarray:
+    def stop_playback(self) -> None:
+        """Flush queued speech and wake play() after barge-in."""
+        self.pump.clear_uplink()
+        self._uplink_audio.set()
+
+    async def listen_utterance(
+        self, max_seconds: float, on_speech_start: Callable[[], None] | None = None
+    ) -> np.ndarray:
         """Return the far end's first utterance as 16 kHz PCM for STT."""
         # Segment at the link rate and resample the whole utterance once: resampling each
         # tiny SCO packet separately would add a filter transient every few milliseconds.
-        segmenter = Segmenter(rate=self.rate)
-        # Drop audio heard while we were speaking; barge-in is out of scope for goal 1.
+        segmenter = Segmenter(rate=self.rate, on_speech_start=on_speech_start)
         self.pump.take_downlink()
         try:
             async with asyncio.timeout(max_seconds):
                 while not (done := segmenter.feed(self.pump.take_downlink())):
-                    await self._next_audio()
+                    await self._next_audio(self._downlink_audio)
         except TimeoutError:
             done = segmenter.flush()
         return resample(done[0], self.rate, STT_RATE) if done else np.zeros(0, dtype=np.int16)
@@ -315,7 +326,8 @@ class HfLine:
         def on_packet(packet: hci.HCI_SynchronousDataPacket) -> None:
             sdu = self.pump.on_packet(packet.data, packet.packet_status)
             host.send_sco_sdu(connection_handle=packet.connection_handle, sdu=sdu)
-            self._audio.set()
+            self._uplink_audio.set()
+            self._downlink_audio.set()
 
         link.sink = on_packet
 
@@ -323,9 +335,9 @@ class HfLine:
         log.warning("SCO audio link dropped (reason %d)", reason)
         # The audio bearer can be renegotiated without ending the HFP call.
 
-    async def _next_audio(self) -> None:
-        self._audio.clear()
-        await self._audio.wait()
+    async def _next_audio(self, event: asyncio.Event) -> None:
+        event.clear()
+        await event.wait()
 
     def _on_state(self, state: CallState) -> None:
         log.info("call state: %s", state.value)
