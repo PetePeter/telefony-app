@@ -8,9 +8,9 @@ import numpy as np
 
 from telefony_app.phone import validate_recording_id
 
-_MIN_ACTIVE_RMS = 512
-_MIN_ACTIVE_PEAK = 1024
-_MAX_GAIN = 4.0
+_MIN_ACTIVE_RMS = 200
+_MIN_ACTIVE_PEAK = 400
+_MAX_GAIN = 10.0
 _NORMALISE_WINDOW_MS = 20
 _NORMALISE_RAMP_MS = 5
 _NORMALISE_BATCH_WINDOWS = 4096

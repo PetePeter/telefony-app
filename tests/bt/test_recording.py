@@ -64,7 +64,7 @@ def test_caps_gain_and_leaves_silence_and_noise_below_the_floor_unchanged(tmp_pa
     sample_count = 8000
     phase = np.arange(sample_count) * (2 * np.pi / 100)
     reference = (12000 * np.sin(phase)).astype(np.int16)
-    quiet_speech = (1200 * np.sin(phase)).astype(np.int16)
+    quiet_speech = (600 * np.sin(phase)).astype(np.int16)
     recorder = WavRecorder(tmp_path, "gated", 8000)
 
     recorder.write_frame(reference, quiet_speech)
@@ -72,7 +72,7 @@ def test_caps_gain_and_leaves_silence_and_noise_below_the_floor_unchanged(tmp_pa
 
     _, frames = read_frames(tmp_path / "gated.wav")
     quiet_peak = np.max(np.abs(frames[:, 1].astype(np.int32)))
-    assert 3600 < quiet_peak <= 4800
+    assert 5400 < quiet_peak <= 6000
 
     noise = np.resize(np.array([-100, 100], dtype=np.int16), sample_count)
     silence = np.zeros(sample_count, dtype=np.int16)
@@ -82,6 +82,22 @@ def test_caps_gain_and_leaves_silence_and_noise_below_the_floor_unchanged(tmp_pa
     _, low_frames = read_frames(tmp_path / "low-level.wav")
     np.testing.assert_array_equal(low_frames[:, 0], noise)
     np.testing.assert_array_equal(low_frames[:, 1], silence)
+
+
+def test_boosts_a_faint_caller_to_the_level_of_the_spoken_reply(tmp_path):
+    # A CVSD caller often sits at an RMS of a few hundred while the TTS side is normalised loud.
+    sample_count = 8000
+    phase = np.arange(sample_count) * (2 * np.pi / 100)
+    faint_caller = (400 * np.sin(phase)).astype(np.int16)
+    tts = (3000 * np.sin(phase)).astype(np.int16)
+    recorder = WavRecorder(tmp_path, "faint", 8000)
+
+    recorder.write_frame(faint_caller, tts)
+    recorder.finish()
+
+    _, frames = read_frames(tmp_path / "faint.wav")
+    levels = np.sqrt(np.mean(frames.astype(np.float64) ** 2, axis=0))
+    assert abs(levels[0] - levels[1]) / levels[1] < 0.03
 
 
 def test_does_not_boost_noise_or_silence_windows_around_active_speech(tmp_path):
