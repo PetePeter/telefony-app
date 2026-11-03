@@ -1,12 +1,14 @@
-"""A fake phone on Bumble's in-memory radio link, serving one OBEX service from a request handler."""
+"""A fake phone on Bumble's in-memory radio link, serving one OBEX service from a request handler; and our side's
+dongle, healthy or wedged."""
 
 import struct
 from collections.abc import Callable
 
-from bumble import core, rfcomm, sdp
+from bumble import core, hci, rfcomm, sdp
 from bumble.controller import Controller
 from bumble.device import Device
 from bumble.hci import Address
+from bumble.keys import MemoryKeyStore, PairingKeys
 from bumble.link import LocalLink
 
 from telefony_app.bt import obex
@@ -69,3 +71,32 @@ def serve_obex(device: Device, service: core.UUID, handle: Handler) -> list[obex
         ]
     }
     return requests
+
+
+class WedgedSink:
+    """The host-to-controller edge of a USB dongle that has stopped taking connection commands (seen live as
+    'OUT transfer not completed'): HCI_Create_Connection never reaches the controller, everything else does."""
+
+    CREATE_CONNECTION = bytes([hci.HCI_COMMAND_PACKET]) + hci.HCI_CREATE_CONNECTION_COMMAND.to_bytes(2, "little")
+
+    def __init__(self, controller: Controller) -> None:
+        self.controller = controller
+        self.dropped = 0
+
+    def on_packet(self, packet: bytes) -> None:
+        if packet.startswith(self.CREATE_CONNECTION):
+            self.dropped += 1
+            return
+        self.controller.on_packet(packet)
+
+
+async def make_bonded_device(link: LocalLink, phone: str, wedged: bool = False) -> Device:
+    """Our side, holding a Classic link key for phone; with wedged, its dongle swallows every page."""
+    address = "F0:F1:F2:F3:F4:F5"
+    controller = Controller(address, link=link, public_address=address)
+    device = Device.with_hci(address, Address(address), controller, WedgedSink(controller) if wedged else controller)
+    device.classic_enabled = True
+    device.keystore = MemoryKeyStore()
+    await device.keystore.update(phone, PairingKeys(link_key=PairingKeys.Key(value=bytes(16)), link_key_type=4))
+    await device.power_on()
+    return device

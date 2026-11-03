@@ -15,6 +15,12 @@ _INBOUND_LINK_SECONDS = 5.0
 # A phone ignores pages until its old link times out (~20 s after we die without disconnecting): keep trying.
 _RECONNECT_ATTEMPTS = 6
 _RECONNECT_PAUSE_SECONDS = 5.0
+# A phone that is off or out of range fails the page; only a wedged dongle leaves the page command unanswered.
+WEDGED_AFTER_TIMEOUTS = 3
+
+
+class ControllerWedged(Exception):
+    """The Bluetooth dongle stopped answering HCI commands; only reopening its transport brings it back."""
 
 
 async def bonded_phones(keystore: KeyStore) -> list[Address]:
@@ -42,13 +48,20 @@ async def connect_bonded_phone(device: Device) -> rfcomm.DLC | None:
     if device.keystore is None:
         return None
     phones = await bonded_phones(device.keystore)
+    timeouts = 0
     for attempt in range(_RECONNECT_ATTEMPTS if phones else 0):
         if attempt:
             await asyncio.sleep(_RECONNECT_PAUSE_SECONDS)
             if device.connections:  # the phone linked to us meanwhile; its HFP channel arrives via the RFCOMM server
                 return None
-        if dlc := await _try_each(device, phones):
-            return dlc
+        try:
+            if dlc := await _try_each(device, phones):
+                return dlc
+            timeouts = 0
+        except core.CommandTimeoutError:
+            timeouts += 1
+            if timeouts >= WEDGED_AFTER_TIMEOUTS:
+                raise ControllerWedged(f"no answer to {timeouts} pages in a row") from None
     return None
 
 
@@ -69,6 +82,8 @@ async def _try_each(device: Device, phones: list[Address]) -> rfcomm.DLC | None:
             if (task := asyncio.current_task()) is not None and task.cancelling():
                 raise
             log.info("bonded phone %s dropped the link (did it forget us? pair again): %s", address, e)
+        except core.CommandTimeoutError:  # the dongle, not the phone: no use paging the others
+            raise
         except Exception as e:  # phone off / out of range: try the next, then wait for the phone
             log.info("could not reach bonded phone %s: %s", address, e)
     return None

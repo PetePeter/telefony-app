@@ -27,6 +27,10 @@ class ObexError(Exception):
     pass
 
 
+class ObexTimeout(ObexError):
+    """The phone did not answer a request in time."""
+
+
 @dataclass
 class Packet:
     code: int  # opcode for requests, response code for responses
@@ -130,7 +134,7 @@ class ObexClient:
             async with asyncio.timeout(REPLY_TIMEOUT_S):
                 reply = await self._packets.get()
         except TimeoutError:
-            raise ObexError(f"phone did not answer OBEX 0x{packet.code:02X}") from None
+            raise ObexTimeout(f"phone did not answer OBEX 0x{packet.code:02X}") from None
         # SETPATH responses carry no fixed fields; only CONNECT's does
         return decode(reply, fields_length(packet.code) if packet.code == CONNECT else 0)
 

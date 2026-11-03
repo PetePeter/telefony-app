@@ -10,6 +10,7 @@ from tests.bt.test_bmessage import IOS_SMS, LISTING
 from telefony_app.bt import obex
 from telefony_app.bt.bmessage import parse_message
 from telefony_app.bt.map_client import MAS_TARGET, make_mns_sdp_records, map_session
+from telefony_app.phone import SmsMaybeSent
 
 
 async def phone_and_link(handler):
@@ -85,3 +86,30 @@ async def test_a_silent_phone_fails_the_request_and_the_next_session_still_works
     silent = False
     async with map_session(connection) as session:
         assert await session.list_messages()
+
+
+def silent_on(code: int):
+    def handler(request):
+        if request.code == code:
+            raise RuntimeError("phone stays silent")
+        return mas(request)
+
+    return handler
+
+
+async def test_no_answer_to_the_final_put_means_the_sms_may_have_been_sent(monkeypatch):
+    # The phone may have queued it and only the reply was lost: resending could text the person twice.
+    monkeypatch.setattr(obex, "REPLY_TIMEOUT_S", 0.2)
+    connection, _ = await phone_and_link(silent_on(obex.PUT))
+    with pytest.raises(SmsMaybeSent):
+        async with map_session(connection) as session:
+            await session.send_sms("0491570110", "hi")
+
+
+async def test_no_answer_before_the_put_is_a_plain_timeout_safe_to_retry(monkeypatch):
+    monkeypatch.setattr(obex, "REPLY_TIMEOUT_S", 0.2)
+    connection, requests = await phone_and_link(silent_on(obex.SETPATH))
+    with pytest.raises(obex.ObexTimeout):
+        async with map_session(connection) as session:
+            await session.send_sms("0491570110", "hi")
+    assert not [r for r in requests if r.code in (obex.PUT, obex.PUT_MORE)]

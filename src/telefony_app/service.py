@@ -5,20 +5,23 @@ import contextlib
 import itertools
 import logging
 import re
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Any, Literal, TypeVar
 
 from telefony_app.allowlist import is_allowed
 from telefony_app.bt import contacts as contact_book
 from telefony_app.bt.dialing import normalize_number
 from telefony_app.events import EventLog
-from telefony_app.phone import LinkDown, Phone, PhoneError, validate_recording_id
+from telefony_app.phone import LinkDown, Phone, PhoneError, Retryable, validate_recording_id
 
 log = logging.getLogger(__name__)
 
 PREVIEW_LENGTH = 160
 DTMF_DIGITS = re.compile(r"[0-9*#,]{1,32}")
 LIVE_AUDIO_QUEUE_FRAMES = 10
+RETRY_PAUSES_S = (1, 2, 4, 8, 16)  # backoff while the phone link comes back; ~31 s in all
+T = TypeVar("T")
 
 # PhAP error codes (spec/2026-10-27/errors.md)
 INVALID_PARAMS = -32602
@@ -167,40 +170,40 @@ class PhoneService:
     async def dial(self, number: str | None = None, contact: str | None = None, recording_id: object = None) -> str:
         recording_id = _recording_id(recording_id)
         number = await self._reachable(number, contact)
-        self._ready()
+        self._started()
         if any(c.state != "ended" for c in self.calls.values()):
             raise PhapError(BUSY, "busy", {"detail": "a call is already up; use conference.create"})
         call = self._new_call(number, "outbound", "dialing")
-        await self._failing(call, self.phone.dial(number, recording_id))
+        await self._failing(call, lambda: self.phone.dial(number, recording_id), retry=True)
         return call.call_id
 
     async def answer(self, call_id: str, recording_id: object = None) -> None:
         recording_id = _recording_id(recording_id)
         call = self._call(call_id, "ringing")
-        await self._phone(self.phone.answer(recording_id))
+        await self._phone(lambda: self.phone.answer(recording_id))
         self._set_state(call, "active")
 
     async def reject(self, call_id: str) -> None:
         call = self._call(call_id, "ringing")
-        await self._phone(self.phone.reject())
+        await self._phone(self.phone.reject)
         self._set_state(call, "ended", "rejected")
 
     async def hangup(self, call_id: str) -> None:
         call = self._call(call_id)
         if call.state == "ringing":
             raise PhapError(INVALID_PARAMS, "invalid params", {"detail": "call is ringing; use call.reject", "state": call.state})
-        await self._phone(self.phone.hangup())  # the phone drops a whole conference at once
+        await self._phone(self.phone.hangup, retry=True)  # the phone drops a whole conference at once
         for each in [c for c in self.calls.values() if c is call or (call.conference and c.conference)]:
             self._set_state(each, "ended", "local")
 
     async def hold(self, call_id: str) -> None:
         call = self._call(call_id, "active")
-        await self._phone(self.phone.hold())
+        await self._phone(self.phone.hold)  # AT+CHLD=2 toggles: a repeat could take the call back off hold
         self._set_state(call, "held")
 
     async def resume(self, call_id: str) -> None:
         call = self._call(call_id, "held")
-        await self._phone(self.phone.resume())
+        await self._phone(self.phone.resume)  # a toggle too: never repeated
         self._set_state(call, "active")
 
     async def say(self, call_id: str, text: str) -> str:
@@ -233,14 +236,14 @@ class PhoneService:
         if not isinstance(digits, str) or not DTMF_DIGITS.fullmatch(digits):
             raise PhapError(INVALID_PARAMS, "invalid params", {"detail": "digits must be 1-32 of 0-9 * # ,"})
         self._call(call_id, "active")
-        await self._phone(self.phone.send_dtmf(digits))
+        await self._phone(lambda: self.phone.send_dtmf(digits))
 
     async def conference_create(self, call_id: str, number: str | None = None, contact: str | None = None) -> str:
         number = await self._reachable(number, contact)
         first = self._call(call_id, "active")
         consult = self._new_call(number, "outbound", "dialing", merge_on_answer=True)
         try:
-            await self._failing(consult, self.phone.consult(number))
+            await self._failing(consult, lambda: self.phone.consult(number))
         except Exception:
             self._current = first
             raise
@@ -249,7 +252,7 @@ class PhoneService:
 
     async def conference_join(self, call_id: str) -> None:
         held = self._call(call_id, "held")
-        await self._phone(self.phone.merge())
+        await self._phone(self.phone.merge)
         self._set_state(held, "active", conference=True)
 
     # --- SMS and contacts ---
@@ -257,18 +260,18 @@ class PhoneService:
     async def sms_send(self, number: str, text: str) -> str:
         if not self._may_reach(number):
             raise PhapError(NOT_ALLOWED, "not_allowed")
-        self._ready()
-        return await self._phone(self.phone.sms_send(number, text))
+        self._started()
+        return await self._phone(lambda: self.phone.sms_send(number, text), retry=True)
 
     async def sms_list(self, limit: int = 20) -> list[dict]:
-        self._ready()
-        messages = await self._phone(self.phone.sms_list(limit))
+        self._started()
+        messages = await self._phone(lambda: self.phone.sms_list(limit), retry=True)
         return [_summary(m.handle, m.number, m.name, m.text) | {"ts": m.ts} for m in messages]
 
     async def sms_read(self, handle: str) -> dict:
-        self._ready()
+        self._started()
         try:
-            message = await self._phone(self.phone.sms_read(handle))
+            message = await self._phone(lambda: self.phone.sms_read(handle), retry=True)
         except KeyError:
             raise PhapError(INVALID_PARAMS, "invalid params", {"detail": f"no message {handle!r}"}) from None
         return {"number": message.number, "text": message.text, "ts": message.ts} | (
@@ -276,13 +279,13 @@ class PhoneService:
         )
 
     async def contacts_search(self, query: str) -> list[dict]:
-        self._ready()
-        found = contact_book.search(await self._phone(self.phone.contacts()), query)
+        self._started()
+        found = contact_book.search(await self._phone(self.phone.contacts, retry=True), query)
         return [_contact(c) for c in found]
 
     async def call_history(self, limit: int = 20) -> list[dict]:
-        self._ready()
-        calls = await self._phone(self.phone.call_log(limit))
+        self._started()
+        calls = await self._phone(lambda: self.phone.call_log(limit), retry=True)
         return [{"direction": c.direction, "number": c.number, "ts": c.ts} | ({"name": c.name} if c.name else {}) for c in calls]
 
     def transcript(self, call_id: str) -> list[dict]:
@@ -378,7 +381,7 @@ class PhoneService:
     async def _reachable(self, number: str | None, contact: str | None) -> str:
         if contact is not None:
             try:
-                number = contact_book.resolve_number(await self._phone(self.phone.contacts()), contact)
+                number = contact_book.resolve_number(await self._phone(self.phone.contacts, retry=True), contact)
             except contact_book.Ambiguous as ambiguous:
                 matches = [_contact(c) for c in ambiguous.candidates]
                 raise PhapError(INVALID_PARAMS, "invalid params", {"detail": str(ambiguous), "matches": matches}) from None
@@ -401,7 +404,12 @@ class PhoneService:
         return is_allowed(number, self.policy.allowlist, self.policy.country_code)
 
     def _ready(self) -> None:
-        if not self.phone.link_up or self.engine != "ready":
+        if not self.phone.link_up:
+            raise PhapError(NO_LINK, "no_link")
+        self._started()
+
+    def _started(self) -> None:
+        if self.engine != "ready":
             raise PhapError(NO_LINK, "no_link")
 
     def _call(self, call_id: str, state: str | None = None) -> Call:
@@ -430,18 +438,29 @@ class PhoneService:
         call.conference = call.conference or bool(conference)
         self.events.emit("call.state", callId=call.call_id, state=state, reason=reason, conference=conference)
 
-    async def _phone(self, command):
-        try:
-            return await command
-        except LinkDown as down:
-            raise PhapError(NO_LINK, "no_link", {"detail": str(down)}) from None
-        except PhoneError as refused:
-            raise PhapError(PHONE_ERROR, "phone_error", {"detail": str(refused)}) from None
+    async def _phone(self, command: Callable[[], Awaitable[T]], retry: bool = False) -> T:
+        """Run a phone command. With retry, a failure that reached nobody (the link was down, or the phone
+        refused at once) is tried again after each of RETRY_PAUSES_S; only pass it for commands safe to repeat."""
+        pauses = iter(RETRY_PAUSES_S if retry else ())
+        while True:
+            try:
+                if not self.phone.link_up:
+                    raise LinkDown("Bluetooth link to the phone is down")
+                return await command()
+            except Retryable as failed:
+                if (pause := next(pauses, None)) is None:
+                    if isinstance(failed, LinkDown):
+                        raise PhapError(NO_LINK, "no_link", {"detail": str(failed)}) from None
+                    raise PhapError(PHONE_ERROR, "phone_error", {"detail": str(failed)}) from None
+                log.info("phone command failed (%s); retrying in %d s", failed, pause)
+                await asyncio.sleep(pause)
+            except PhoneError as refused:
+                raise PhapError(PHONE_ERROR, "phone_error", {"detail": str(refused)}) from None
 
-    async def _failing(self, call: Call, command) -> None:
+    async def _failing(self, call: Call, command: Callable[[], Awaitable[None]], retry: bool = False) -> None:
         """Run a command that places call; if the phone refuses, the call ended before it began."""
         try:
-            await self._phone(command)
+            await self._phone(command, retry)
         except Exception:
             self._set_state(call, "ended", "failed")
             raise

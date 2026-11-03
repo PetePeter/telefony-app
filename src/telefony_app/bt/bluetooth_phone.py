@@ -14,12 +14,23 @@ from telefony_app.bt.call_state import CallEnded, CallState
 from telefony_app.bt.dialing import normalize_number
 from telefony_app.bt.hf_line import HfLine, LinkLost
 from telefony_app.bt.map_client import map_session
-from telefony_app.bt.obex import ObexError
+from telefony_app.bt.obex import ObexError, ObexTimeout
 from telefony_app.bt.pbap import pull_call_log, pull_contacts
-from telefony_app.phone import CallLogEntry, Contact, LinkDown, Phone, PhoneError, PhoneEvents, SmsMessage
+from telefony_app.phone import (
+    CallLogEntry,
+    CallMaybePlaced,
+    CallNotPlaced,
+    Contact,
+    LinkDown,
+    Phone,
+    PhoneError,
+    PhoneEvents,
+    SmsMessage,
+)
 from telefony_app.voice import Tts, WhisperStt
 
 log = logging.getLogger(__name__)
+_ATD_NOT_PLACED = {"ERROR", "NO CARRIER"}  # an immediate refusal; BUSY and NO ANSWER mean the call went out
 _UTTERANCE_MAX_S = 30.0
 
 
@@ -77,7 +88,18 @@ class BluetoothPhone(Phone):
         self._stop("incoming")
         self._hung_up = self._ringing = False
         self.line.set_recording_id(recording_id)
-        await self._at(self.line.dial, number)
+        try:
+            await self._at(self._place, number)
+        except LinkDown as lost:  # ATD went out first: the phone may be calling
+            raise CallMaybePlaced(f"call may have been placed: {lost}") from None
+
+    async def _place(self, number: str) -> None:
+        try:
+            await self.line.dial(number)
+        except hfp.HfpProtocolError as refused:
+            if refused.error_name in _ATD_NOT_PLACED:
+                raise CallNotPlaced(refused.error_name) from None
+            raise
 
     async def answer(self, recording_id: str | None = None) -> None:
         self.line.set_recording_id(recording_id)
@@ -161,6 +183,8 @@ class BluetoothPhone(Phone):
         try:
             async with self._obex, map_session(self._connection, self.dlc.multiplexer) as session:
                 yield session
+        except ObexTimeout as silent:  # the link is going or gone; the drop usually follows
+            raise LinkDown(str(silent)) from None
         except (OSError, RuntimeError, LookupError, ObexError) as failed:  # refused or not offered, e.g. iOS before Show Notifications
             raise PhoneError(str(failed)) from None
 

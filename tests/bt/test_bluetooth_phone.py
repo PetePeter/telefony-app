@@ -9,7 +9,7 @@ from bumble import hci, hfp
 
 from telefony_app.bt.bluetooth_phone import BluetoothPhone
 from telefony_app.bt.call_state import CallState
-from telefony_app.phone import PhoneError
+from telefony_app.phone import CallMaybePlaced, CallNotPlaced, PhoneError, Retryable
 from telefony_app.voice import WhisperStt
 from tests.bt.test_hf_line import connect
 
@@ -165,3 +165,35 @@ async def test_voiced_onset_interrupts_playback_and_still_reaches_stt():
         phone._stop("listen")
         phone._stop("contacts")
         line.stop()
+
+
+@pytest.mark.parametrize("result", ["ERROR", "NO CARRIER"])
+async def test_atd_refused_at_once_means_no_call_was_placed(result):
+    ag, line = await connect()
+    ag._on_d = lambda number: ag.send_response(result)
+    phone = BluetoothPhone(line, line.protocol.dlc, None, None)
+    with pytest.raises(CallNotPlaced):
+        await phone.dial("0491570110")
+    line.stop()
+
+
+@pytest.mark.parametrize("result", ["BUSY", "NO ANSWER"])
+async def test_busy_or_no_answer_is_a_placed_call_and_never_retryable(result):
+    ag, line = await connect()
+    ag._on_d = lambda number: ag.send_response(result)
+    phone = BluetoothPhone(line, line.protocol.dlc, None, None)
+    with pytest.raises(PhoneError) as failed:
+        await phone.dial("0491570110")
+    assert not isinstance(failed.value, Retryable)
+    line.stop()
+
+
+async def test_link_lost_after_atd_went_out_means_the_call_may_have_been_placed():
+    ag, line = await connect()
+    ag._on_d = lambda number: None  # the phone never answers the ATD
+    phone = BluetoothPhone(line, line.protocol.dlc, None, None)
+    dialing = asyncio.create_task(phone.dial("0491570110"))
+    await asyncio.sleep(0.1)
+    await connection_of(line).disconnect()
+    with pytest.raises(CallMaybePlaced):
+        await asyncio.wait_for(dialing, 2)

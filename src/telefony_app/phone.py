@@ -9,7 +9,7 @@ from typing import Protocol
 from telefony_app.bt.call_log import CallLogEntry
 from telefony_app.bt.contacts import Contact
 
-__all__ = ["CallLogEntry", "Contact", "LinkDown", "Phone", "PhoneError", "PhoneEvents", "SmsMessage"]
+__all__ = ["CallLogEntry", "CallMaybePlaced", "CallNotPlaced", "Contact", "LinkDown", "Phone", "PhoneError", "PhoneEvents", "Retryable", "SmsMaybeSent", "SmsMessage"]
 
 _RECORDING_ID = re.compile(r"[A-Za-z0-9_-]{1,128}\Z", re.ASCII)
 
@@ -26,8 +26,24 @@ class PhoneError(Exception):
     """The phone refused a command; the message carries its reason (AT or OBEX)."""
 
 
-class LinkDown(PhoneError):
-    """The link to the phone is down."""
+class Retryable(PhoneError):
+    """Nothing reached the far end, so the command is safe to repeat."""
+
+
+class LinkDown(Retryable):
+    """The link to the phone is down, or the phone stopped answering; worth retrying once it is back."""
+
+
+class CallNotPlaced(Retryable):
+    """The phone refused the ATD at once (ERROR, NO CARRIER): no call went out."""
+
+
+class CallMaybePlaced(PhoneError):
+    """ATD went out and then the link failed: the phone may be calling, so never dial again."""
+
+
+class SmsMaybeSent(PhoneError):
+    """The phone got the message but its reply was lost, so it may go out: never resend it."""
 
 
 @dataclass

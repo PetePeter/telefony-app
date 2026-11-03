@@ -8,7 +8,8 @@ from bumble import core, rfcomm, sdp
 from bumble.device import Connection
 
 from telefony_app.bt.bmessage import ListedMessage, Message, build_sms, parse_listing, parse_message
-from telefony_app.bt.obex import NAME, ObexClient, obex_session
+from telefony_app.bt.obex import NAME, ObexClient, ObexTimeout, obex_session
+from telefony_app.phone import SmsMaybeSent
 
 MAS_TARGET = uuid.UUID("bb582b40-420c-11db-b0de-0800200c9a66").bytes
 MAP_VERSION = 0x0104
@@ -37,7 +38,10 @@ class MapSession:
 
     async def send_sms(self, recipient: str, text: str) -> str:
         """Push to the outbox; the phone sends it. Returns the new message handle. Callers enforce the allowlist."""
-        response = await self._client.put("outbox", "x-bt/message", build_sms(recipient, text), _CHARSET_UTF8)
+        try:
+            response = await self._client.put("outbox", "x-bt/message", build_sms(recipient, text), _CHARSET_UTF8)
+        except ObexTimeout as lost:
+            raise SmsMaybeSent(f"sms may have been sent: {lost}") from None
         handle = response.header(NAME)
         return handle if isinstance(handle, str) else ""
 

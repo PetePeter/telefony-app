@@ -74,6 +74,7 @@ class FakePhone(Phone):
 
     async def sms_send(self, number: str, text: str) -> str:
         self.commands.append(("sms_send", number, text))
+        self._fail("sms_send")
         return f"h{len(self.commands)}"
 
     async def sms_list(self, limit: int) -> list[SmsMessage]:

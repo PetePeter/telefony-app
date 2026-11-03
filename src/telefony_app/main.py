@@ -11,7 +11,7 @@ import contextlib
 import json
 import logging
 import sys
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from pathlib import Path
 
 from bumble import hci, hfp, rfcomm
@@ -20,7 +20,7 @@ from bumble.transport import open_transport
 from bumble.transport.common import TransportInitError
 
 from telefony_app import __version__
-from telefony_app.bt.autoconnect import connect_bonded_phone
+from telefony_app.bt.autoconnect import ControllerWedged, connect_bonded_phone
 from telefony_app.bt.bluetooth_phone import BluetoothPhone
 from telefony_app.bt.hf_line import HF_CONFIGURATION, HfLine
 from telefony_app.bt.link import keep_links_alive
@@ -89,19 +89,32 @@ async def listen_for_phone(
 
 
 async def keep_linked(device: Device, phone: BluetoothPhone, connected: LineQueue, on_dlc: Callable[[rfcomm.DLC], None]) -> None:
-    """Whenever the link drops, page the bonded phone until a new line is up (from us or the phone), then relink."""
+    """Whenever the link drops, page the bonded phone until a new line is up (from us or the phone), then relink.
+    Raises ControllerWedged (in an ExceptionGroup) once the dongle stops answering pages."""
     while True:
         await phone.link_down.wait()
         log.info("phone link lost; reconnecting")
-        pager = asyncio.create_task(_page_until_back(device, on_dlc))
-        try:
+        async with asyncio.TaskGroup() as paging:  # a wedged pager fails the group instead of dying unseen
+            pager = paging.create_task(_page_until_back(device, on_dlc))
             line, dlc = await connected.get()
             while dlc.multiplexer.l2cap_channel.connection not in device.connections.values():  # stale, from an old link
                 line, dlc = await connected.get()
-        finally:
             pager.cancel()
         phone.relink(line, dlc)
         log.info("phone reconnected")
+
+
+async def keep_controller(
+    open_device: Callable[[], contextlib.AbstractAsyncContextManager[Device]], link_phone: Callable[[Device], Awaitable[None]]
+) -> None:
+    """Run link_phone on a freshly opened dongle; when the dongle wedges, close it, reopen it and start over."""
+    while True:
+        try:
+            async with open_device() as device:
+                await link_phone(device)
+            return
+        except* ControllerWedged as wedged:
+            log.warning("Bluetooth dongle stopped answering (%s); reopening it", wedged.exceptions[0])
 
 
 async def _page_until_back(device: Device, on_dlc: Callable[[rfcomm.DLC], None]) -> None:
@@ -125,36 +138,56 @@ def make_device_configuration(config: Config) -> DeviceConfiguration:
 async def run(config: Config, config_path: Path, mcp: bool) -> None:
     tts, stt = make_tts(config.tts, config.piper_model, config.sapi_voice), make_stt(config.stt_model)
     log.info("text-to-speech: %s; speech-to-text: %s", type(tts).__name__ if tts else "none", "whisper" if stt else "none")
-    async with await open_transport(config.transport) as transport:
-        device_config = make_device_configuration(config)
-        if getattr(transport.sink, "isochronous_out", None) is not None:
-            UsbScoStreamer(transport.sink)
-        device = Device.from_config_with_hci(device_config, transport.source, transport.sink)
-        async with contextlib.AsyncExitStack() as stack:
-            pairing_controller = PairingController(device, config.device_name) if config.web_token else None
-            if pairing_controller is not None:
-                stack.push_async_callback(pairing_controller.close)
-            web = None
-            if config.web_token:  # up before the phone, so pairing can be watched from the page
-                web = WebApp(config_path, config, keystore=lambda: device.keystore)
-                web.pairing = pairing_controller
-                port = await stack.enter_async_context(web.serve())
-                log.info("web UI on http://%s:%d/", config.web_host, port)
-            connected, on_dlc = await listen_for_phone(device, pairing_controller, config.recordings_directory)
-            line, dlc = await connected.get()
-            log.info("phone connected")
-            phone = BluetoothPhone(line, dlc, tts, stt)
-            service = PhoneService(phone, config.policy, config.event_buffer)
-            relinker = asyncio.create_task(keep_linked(device, phone, connected, on_dlc))
-            stack.callback(relinker.cancel)
-            if web:
-                web.service = service
-            if mcp:
-                await McpProjection(service).build().run_stdio_async()
-                return
-            async with PhapServer(service, config.token, config.heartbeat_s).serve(config.host, config.port) as port:
-                log.info("PhAP listening on ws://%s:%d/phap", config.host, port)
-                await asyncio.get_running_loop().create_future()
+    device: Device | None = None
+    first_phone: asyncio.Future[BluetoothPhone] = asyncio.get_running_loop().create_future()
+    async with contextlib.AsyncExitStack() as stack:
+        web = None
+        if config.web_token:  # up before the phone, so pairing can be watched from the page
+            web = WebApp(config_path, config, keystore=lambda: device.keystore if device else None)
+            port = await stack.enter_async_context(web.serve())
+            log.info("web UI on http://%s:%d/", config.web_host, port)
+
+        @contextlib.asynccontextmanager
+        async def open_device() -> AsyncIterator[Device]:
+            nonlocal device
+            async with await open_transport(config.transport) as transport:
+                if getattr(transport.sink, "isochronous_out", None) is not None:
+                    UsbScoStreamer(transport.sink)
+                device = Device.from_config_with_hci(make_device_configuration(config), transport.source, transport.sink)
+                yield device
+
+        async def link_phone(device: Device) -> None:
+            async with contextlib.AsyncExitStack() as session:
+                pairing_controller = PairingController(device, config.device_name) if config.web_token else None
+                if pairing_controller is not None:
+                    session.push_async_callback(pairing_controller.close)
+                if web:
+                    web.pairing = pairing_controller
+                connected, on_dlc = await listen_for_phone(device, pairing_controller, config.recordings_directory)
+                line, dlc = await connected.get()
+                if first_phone.done():  # a reopened dongle: the same phone, service and clients carry on
+                    first_phone.result().relink(line, dlc)
+                    log.info("phone reconnected")
+                else:
+                    first_phone.set_result(BluetoothPhone(line, dlc, tts, stt))
+                    log.info("phone connected")
+                await keep_linked(device, first_phone.result(), connected, on_dlc)
+
+        bluetooth = asyncio.create_task(keep_controller(open_device, link_phone))
+        stack.callback(bluetooth.cancel)
+        await asyncio.wait({first_phone, bluetooth}, return_when=asyncio.FIRST_COMPLETED)
+        if not first_phone.done():
+            await bluetooth  # it ended before any phone linked: surface why
+            return
+        service = PhoneService(first_phone.result(), config.policy, config.event_buffer)
+        if web:
+            web.service = service
+        if mcp:
+            await McpProjection(service).build().run_stdio_async()
+            return
+        async with PhapServer(service, config.token, config.heartbeat_s).serve(config.host, config.port) as port:
+            log.info("PhAP listening on ws://%s:%d/phap", config.host, port)
+            await bluetooth
 
 
 def main(argv: list[str] | None = None) -> None:
