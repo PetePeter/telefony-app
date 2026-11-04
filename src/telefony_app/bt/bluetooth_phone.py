@@ -36,19 +36,25 @@ _UTTERANCE_MAX_S = 30.0
 
 class BluetoothPhone(Phone):
     live_audio_available = True
+    line: HfLine  # bound by the first link; PhoneService checks link_up before using it
+    dlc: rfcomm.DLC
 
-    def __init__(self, line: HfLine, dlc: rfcomm.DLC, tts: Tts | None, stt: WhisperStt | None) -> None:
+    def __init__(self, line: HfLine | None, dlc: rfcomm.DLC | None, tts: Tts | None, stt: WhisperStt | None) -> None:
+        """Without a line the phone starts unlinked (it was unreachable at startup); relink() brings it up."""
         self.tts, self.stt = tts, stt
         self.tts_available, self.stt_available = tts is not None, stt is not None
         self.events: PhoneEvents | None = None
+        self.link_up = False
         self.link_down = asyncio.Event()  # set while there is no link; main waits on it to reconnect
+        self.link_down.set()
         self._hung_up = False
         self._ringing = False  # the current call came in rather than going out
         self._tasks: dict[str, asyncio.Task] = {}
         self._speech_generation = 0
         self._live_audio_callback: Callable[[bytes], None] | None = None
         self._obex = asyncio.Lock()  # one OBEX session at a time: bumble opens one DLC at a time on the shared multiplexer
-        self._bind(line, dlc)
+        if line is not None and dlc is not None:
+            self._bind(line, dlc)
 
     def _bind(self, line: HfLine, dlc: rfcomm.DLC) -> None:
         self.line, self.dlc = line, dlc
@@ -63,8 +69,9 @@ class BluetoothPhone(Phone):
         self._start("contacts", self._pull_contacts())  # also makes iOS offer its "Sync Contacts" switch
 
     def relink(self, line: HfLine, dlc: rfcomm.DLC) -> None:
-        """Carry on over a new HFP line after the old link dropped."""
-        self.line.stop()
+        """Carry on over a new HFP line after the old link dropped, or bring up the first one."""
+        if hasattr(self, "line"):  # not on the first link
+            self.line.stop()
         self._bind(line, dlc)
         if self.events:
             self.events.link(True)
@@ -76,11 +83,13 @@ class BluetoothPhone(Phone):
 
     def attach(self, events: PhoneEvents) -> None:
         self.events = events
-        self._watch_incoming()
+        if self.link_up:
+            self._watch_incoming()
 
     def set_live_audio_callback(self, callback: Callable[[bytes], None] | None) -> None:
         self._live_audio_callback = callback
-        self.line.set_live_audio_callback(callback)
+        if self.link_up:
+            self.line.set_live_audio_callback(callback)
 
     # --- calls ---
 
@@ -132,8 +141,9 @@ class BluetoothPhone(Phone):
         generation = self._speech_generation
         try:
             pcm = await self.tts.synthesize(text, self.line.rate)
-            if generation == self._speech_generation:
-                await self._at(self.line.play(pcm))
+            if generation != self._speech_generation:  # the far end spoke first: nothing was heard
+                raise PhoneError("interrupted before it played")
+            await self._at(self.line.play(pcm))
         except (OSError, RuntimeError, CallEnded, wave.Error) as failed:
             raise PhoneError(str(failed) or type(failed).__name__) from None
 

@@ -62,6 +62,24 @@ async def test_relinked_phone_reports_link_up_and_dials_on_the_new_line():
     new_line.stop()
 
 
+async def test_a_phone_that_never_linked_reports_down_then_works_on_its_first_line():
+    # Seen live: with the phone unreachable at startup, PhAP never opened, so Timbre could not even see "link down".
+    phone, events = BluetoothPhone(None, None, None, None), Events()
+    phone.attach(events)
+    phone.set_live_audio_callback(None)
+    assert not phone.link_up and phone.link_down.is_set()
+
+    ag, line = await connect()
+    phone.relink(line, line.protocol.dlc)
+
+    assert phone.link_up and events.links == [True]
+    dialed = asyncio.get_running_loop().create_future()
+    ag.once(ag.EVENT_DIAL, dialed.set_result)
+    await phone.dial("0491570110")
+    assert await asyncio.wait_for(dialed, 1) == "0491570110;"
+    line.stop()
+
+
 async def test_late_disconnect_of_the_old_link_does_not_take_the_new_one_down():
     _, old_line = await connect()
     phone = BluetoothPhone(old_line, old_line.protocol.dlc, None, None)
@@ -197,3 +215,19 @@ async def test_link_lost_after_atd_went_out_means_the_call_may_have_been_placed(
     await connection_of(line).disconnect()
     with pytest.raises(CallMaybePlaced):
         await asyncio.wait_for(dialing, 2)
+
+
+async def test_speech_interrupted_before_it_plays_fails_rather_than_counting_as_spoken():
+    # Seen live: the far end kept saying "Hello?" while a phrase rendered; it was dropped yet reported spoken.
+    _, line = await connect()
+    phone: BluetoothPhone
+
+    class Tts:
+        async def synthesize(self, text: str, rate: int) -> np.ndarray:
+            phone._interrupt_speech()  # the far end starts talking while we render
+            return np.ones(rate, dtype=np.int16)
+
+    phone = BluetoothPhone(line, line.protocol.dlc, Tts(), None)
+    with pytest.raises(PhoneError, match="interrupted"):
+        await phone.speak("Hi, it is Oscar.")
+    line.stop()

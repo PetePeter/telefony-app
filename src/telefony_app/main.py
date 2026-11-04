@@ -15,12 +15,13 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from pathlib import Path
 
 from bumble import hci, hfp, rfcomm
-from bumble.device import Device, DeviceConfiguration
+from bumble import core
+from bumble.device import Connection, Device, DeviceConfiguration
 from bumble.transport import open_transport
 from bumble.transport.common import TransportInitError
 
 from telefony_app import __version__
-from telefony_app.bt.autoconnect import ControllerWedged, connect_bonded_phone
+from telefony_app.bt.autoconnect import ControllerWedged, bonded_phones, connect_bonded_phone
 from telefony_app.bt.bluetooth_phone import BluetoothPhone
 from telefony_app.bt.hf_line import HF_CONFIGURATION, HfLine
 from telefony_app.bt.link import keep_links_alive
@@ -38,6 +39,8 @@ HANDS_FREE_CLASS_OF_DEVICE = 0x200408
 NO_DONGLE_EXIT = 3  # with the stderr line "telefony-app: dongle not found", which Helm matches
 SDP_HANDLE, MNS_SDP_HANDLE = 0x00010001, 0x00010002
 RECONNECT_PAUSE_S = 5.0
+# A bonded phone's link with no HFP line this long after it came up is half-open (seen live after a drop).
+LINE_DEADLINE_S = 20.0
 log = logging.getLogger("telefony_app")
 LineQueue = asyncio.Queue[tuple[HfLine, rfcomm.DLC]]
 
@@ -79,8 +82,8 @@ async def listen_for_phone(
         await device.set_discoverable(True)
     else:
         pairing_controller.mark_ready()
-    if dlc := await connect_bonded_phone(device):
-        on_dlc(dlc)
+    if device.keystore is not None and await bonded_phones(device.keystore):
+        log.info("paging the bonded phone")
     elif pairing_controller is not None:
         log.info("waiting for a pairing window from the setup API")
     else:
@@ -89,19 +92,24 @@ async def listen_for_phone(
 
 
 async def keep_linked(device: Device, phone: BluetoothPhone, connected: LineQueue, on_dlc: Callable[[rfcomm.DLC], None]) -> None:
-    """Whenever the link drops, page the bonded phone until a new line is up (from us or the phone), then relink.
-    Raises ControllerWedged (in an ExceptionGroup) once the dongle stops answering pages."""
+    """Whenever the link drops, wait for the next line and relink."""
     while True:
         await phone.link_down.wait()
         log.info("phone link lost; reconnecting")
-        async with asyncio.TaskGroup() as paging:  # a wedged pager fails the group instead of dying unseen
-            pager = paging.create_task(_page_until_back(device, on_dlc))
-            line, dlc = await connected.get()
-            while dlc.multiplexer.l2cap_channel.connection not in device.connections.values():  # stale, from an old link
-                line, dlc = await connected.get()
-            pager.cancel()
-        phone.relink(line, dlc)
+        phone.relink(*await next_line(device, connected, on_dlc))
         log.info("phone reconnected")
+
+
+async def next_line(device: Device, connected: LineQueue, on_dlc: Callable[[rfcomm.DLC], None]) -> tuple[HfLine, rfcomm.DLC]:
+    """Page the bonded phone until a live HFP line is up (from us or the phone).
+    Raises ControllerWedged (in an ExceptionGroup) once the dongle stops answering."""
+    async with asyncio.TaskGroup() as paging:  # a wedged pager fails the group instead of dying unseen
+        pager = paging.create_task(_page_until_back(device, on_dlc))
+        line, dlc = await connected.get()
+        while dlc.multiplexer.l2cap_channel.connection not in device.connections.values():  # stale, from an old link
+            line, dlc = await connected.get()
+        pager.cancel()
+    return line, dlc
 
 
 async def keep_controller(
@@ -118,11 +126,28 @@ async def keep_controller(
 
 
 async def _page_until_back(device: Device, on_dlc: Callable[[rfcomm.DLC], None]) -> None:
-    """Runs until cancelled: if bringing up a channel fails, the link drops and we page again."""
+    """Runs until cancelled: page while unlinked. A bonded phone's link that brings no HFP line within
+    LINE_DEADLINE_S is half-open (the keepalive would hold it forever), so drop it and page again."""
+    up_since: dict[Connection, float] = {}
     while True:
         if not device.connections and (dlc := await connect_bonded_phone(device)):
             on_dlc(dlc)
+        now = asyncio.get_running_loop().time()
+        bonded = await bonded_phones(device.keystore) if device.keystore is not None else []
+        for connection in list(device.connections.values()):
+            if connection.peer_address in bonded and now - up_since.setdefault(connection, now) >= LINE_DEADLINE_S:
+                await _drop_half_open(connection)
         await asyncio.sleep(RECONNECT_PAUSE_S)
+
+
+async def _drop_half_open(connection: Connection) -> None:
+    log.warning("link to %s brought no hands-free line in %.0f s; dropping it", connection.peer_address, LINE_DEADLINE_S)
+    try:
+        await connection.disconnect()
+    except core.CommandTimeoutError:
+        raise ControllerWedged("no answer to a disconnect") from None
+    except Exception as e:  # it went away by itself meanwhile
+        log.info("dropping %s: %s", connection.peer_address, e)
 
 
 def make_device_configuration(config: Config) -> DeviceConfiguration:
@@ -139,7 +164,7 @@ async def run(config: Config, config_path: Path, mcp: bool) -> None:
     tts, stt = make_tts(config.tts, config.piper_model, config.sapi_voice), make_stt(config.stt_model)
     log.info("text-to-speech: %s; speech-to-text: %s", type(tts).__name__ if tts else "none", "whisper" if stt else "none")
     device: Device | None = None
-    first_phone: asyncio.Future[BluetoothPhone] = asyncio.get_running_loop().create_future()
+    phone = BluetoothPhone(None, None, tts, stt)  # PhAP serves it from the start; it reports link down until linked
     async with contextlib.AsyncExitStack() as stack:
         web = None
         if config.web_token:  # up before the phone, so pairing can be watched from the page
@@ -164,22 +189,13 @@ async def run(config: Config, config_path: Path, mcp: bool) -> None:
                 if web:
                     web.pairing = pairing_controller
                 connected, on_dlc = await listen_for_phone(device, pairing_controller, config.recordings_directory)
-                line, dlc = await connected.get()
-                if first_phone.done():  # a reopened dongle: the same phone, service and clients carry on
-                    first_phone.result().relink(line, dlc)
-                    log.info("phone reconnected")
-                else:
-                    first_phone.set_result(BluetoothPhone(line, dlc, tts, stt))
-                    log.info("phone connected")
-                await keep_linked(device, first_phone.result(), connected, on_dlc)
+                phone.relink(*await next_line(device, connected, on_dlc))  # a reopened dongle: same phone, service and clients
+                log.info("phone connected")
+                await keep_linked(device, phone, connected, on_dlc)
 
         bluetooth = asyncio.create_task(keep_controller(open_device, link_phone))
         stack.callback(bluetooth.cancel)
-        await asyncio.wait({first_phone, bluetooth}, return_when=asyncio.FIRST_COMPLETED)
-        if not first_phone.done():
-            await bluetooth  # it ended before any phone linked: surface why
-            return
-        service = PhoneService(first_phone.result(), config.policy, config.event_buffer)
+        service = PhoneService(phone, config.policy, config.event_buffer)
         if web:
             web.service = service
         if mcp:
