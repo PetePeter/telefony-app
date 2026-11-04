@@ -195,3 +195,44 @@ async def test_unknown_sapi_voice_falls_back_through_powershell_and_warns(caplog
 
     assert len(pcm) > 0
     assert "default Windows voice" in caplog.text
+
+
+async def test_resident_piper_loads_the_voice_once_and_speaks_at_the_link_rate():
+    # Seen live: spawning piper per phrase reloaded a 63 MB voice each time, 13 s of silence before every line.
+    from telefony_app.voice import ResidentPiperTts
+
+    loads: list[str] = []
+
+    class Chunk:
+        audio_int16_bytes = np.ones(22050, dtype=np.int16).tobytes()  # one second at the voice's rate
+
+    class Voice:
+        class config:
+            sample_rate = 22050
+
+        def synthesize(self, text: str):
+            return [Chunk()]
+
+    def load(model: str) -> Voice:
+        loads.append(model)
+        return Voice()
+
+    tts = ResidentPiperTts("voice.onnx", load)
+    first, second = await tts.synthesize("Hello.", 8000), await tts.synthesize("Bye.", 8000)
+    assert loads == ["voice.onnx"]
+    assert abs(len(first) - 8000) < 400 and len(second) == len(first)
+
+
+def test_whisper_silence_hallucinations_are_dropped_and_real_speech_kept():
+    # Seen live: a quiet line came back as "Thanks for watching!" and reached the agent as the far end's words.
+    from types import SimpleNamespace
+
+    from telefony_app.voice import spoken_text
+
+    def segment(text: str, no_speech_prob: float = 0.1) -> SimpleNamespace:
+        return SimpleNamespace(text=text, no_speech_prob=no_speech_prob)
+
+    assert spoken_text([segment(" Thanks for watching!")]) == ""
+    assert spoken_text([segment(" Please subscribe.")]) == ""
+    assert spoken_text([segment(" Who is this?"), segment(" Mm.", no_speech_prob=0.9)]) == "Who is this?"
+    assert spoken_text([segment(" Thank you."), segment(" Bye.")]) == "Thank you. Bye."

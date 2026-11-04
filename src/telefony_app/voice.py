@@ -1,6 +1,8 @@
 """Speech for calls. TTS backends run as separate programs (Piper is GPL-3.0, so it is never imported); STT is faster-whisper."""
 
 import asyncio
+import concurrent.futures
+import importlib.util
 import json
 import logging
 import os
@@ -10,7 +12,8 @@ import sys
 import tempfile
 import wave
 from pathlib import Path
-from typing import Protocol
+from collections.abc import Callable
+from typing import Any, Protocol
 
 import numpy as np
 
@@ -44,6 +47,26 @@ class PiperTts:
             detail = err.decode("utf-8", "replace").strip().splitlines()[-1:] or [""]
             raise RuntimeError(f"piper exited with {process.returncode}: {detail[0]}")
         return shape_for_phone(resample(np.frombuffer(raw, dtype=np.int16), self.rate, rate), rate)
+
+
+class ResidentPiperTts:
+    """Piper in this process (pip install piper-tts): the voice loads once, in the background from startup,
+    so each phrase costs ~0.1 s instead of a ~13 s process start and model load."""
+
+    def __init__(self, model: str, load: Callable[[str], Any] | None = None) -> None:
+        if load is None:
+            from piper import PiperVoice  # pyright: ignore[reportMissingImports]  optional: pip install piper-tts
+
+            load = PiperVoice.load
+        self._voice = concurrent.futures.ThreadPoolExecutor(1, "piper-load").submit(load, model)
+
+    async def synthesize(self, text: str, rate: int) -> np.ndarray:
+        try:
+            voice = await asyncio.wrap_future(self._voice)
+        except Exception as failed:  # a broken model fails every phrase; FallbackTts takes over
+            raise RuntimeError(f"piper voice did not load: {failed}") from None
+        raw = await asyncio.to_thread(lambda: b"".join(chunk.audio_int16_bytes for chunk in voice.synthesize(one_line(text))))
+        return shape_for_phone(resample(np.frombuffer(raw, dtype=np.int16), voice.config.sample_rate, rate), rate)
 
 
 def one_line(text: str) -> str:
@@ -126,8 +149,9 @@ def make_tts(kind: str, piper_model: str | None, sapi_voice: str | None = None) 
     # The Windows release ships it in a piper/ folder beside telefony-app.exe.
     here = Path(sys.executable).parent
     piper = shutil.which("piper") or shutil.which("piper", path=f"{here}{os.pathsep}{here / 'piper'}")
-    if kind in ("auto", "piper") and piper and piper_model:
-        return FallbackTts(PiperTts(piper, piper_model), SapiTts(sapi_voice)) if sys.platform == "win32" else PiperTts(piper, piper_model)
+    if kind in ("auto", "piper") and piper_model and (importlib.util.find_spec("piper") or piper):
+        primary = ResidentPiperTts(piper_model) if importlib.util.find_spec("piper") else PiperTts(str(piper), piper_model)
+        return FallbackTts(primary, SapiTts(sapi_voice)) if sys.platform == "win32" else primary
     if kind == "piper":
         raise RuntimeError("voice.tts = piper needs the piper executable (on PATH or in this venv) and voice.piper_model")
     if kind in ("auto", "sapi") and sys.platform == "win32":
@@ -143,7 +167,18 @@ class WhisperStt:
 
     def transcribe(self, pcm16k: np.ndarray) -> str:
         segments, _ = self.model.transcribe(pcm16k.astype(np.float32) / 32768, language="en")
-        return " ".join(s.text.strip() for s in segments).strip()
+        return spoken_text(segments)
+
+
+# What Whisper says over silence or line noise: video outros from its training data, not the caller.
+_HALLUCINATION = re.compile(r"(thanks?( you)? (so much )?for watching|please subscribe|subtitles by .*)[.!]*", re.IGNORECASE)
+_NO_SPEECH = 0.6
+
+
+def spoken_text(segments) -> str:
+    """The segments' text, without those Whisper itself rates as no speech or that are known silence fillers."""
+    kept = (s.text.strip() for s in segments if s.no_speech_prob < _NO_SPEECH)
+    return " ".join(text for text in kept if text and not _HALLUCINATION.fullmatch(text)).strip()
 
 
 def make_stt(model: str | None) -> WhisperStt | None:
