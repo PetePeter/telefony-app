@@ -270,7 +270,7 @@ class HfLine:
     async def listen_utterance(
         self, max_seconds: float, on_speech_start: Callable[[], None] | None = None
     ) -> np.ndarray:
-        """Return the far end's first utterance as 16 kHz PCM for STT."""
+        """Return the far end's first utterance as 16 kHz PCM for STT; a hangup ends it where it stands."""
         # Segment at the link rate and resample the whole utterance once: resampling each
         # tiny SCO packet separately would add a filter transient every few milliseconds.
         segmenter = Segmenter(rate=self.rate, on_speech_start=on_speech_start)
@@ -278,6 +278,9 @@ class HfLine:
         try:
             async with asyncio.timeout(max_seconds):
                 while not (done := segmenter.feed(self.pump.take_downlink())):
+                    if self.tracker.state is not CallState.ACTIVE:  # callers leaving a message hang up mid-sentence
+                        done = segmenter.flush()
+                        break
                     await self._next_audio(self._downlink_audio)
         except TimeoutError:
             done = segmenter.flush()
@@ -347,6 +350,7 @@ class HfLine:
         elif state is CallState.ENDED:
             self._finish_recording()
             self._recording_id = None
+            self._downlink_audio.set()  # wake listen_utterance to hand over what it has
             self._note("call ended" if self.tracker.outcome is CallOutcome.COMPLETED else "not answered")
         self._changed.set()
 

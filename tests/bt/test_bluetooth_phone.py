@@ -8,7 +8,7 @@ import pytest
 from bumble import hci, hfp
 
 from telefony_app.bt.bluetooth_phone import BluetoothPhone
-from telefony_app.bt.call_state import CallState
+from telefony_app.bt.call_state import CallOutcome, CallState
 from telefony_app.phone import CallMaybePlaced, CallNotPlaced, PhoneError, Retryable
 from telefony_app.voice import WhisperStt
 from tests.bt.test_hf_line import connect
@@ -231,3 +231,68 @@ async def test_speech_interrupted_before_it_plays_fails_rather_than_counting_as_
     with pytest.raises(PhoneError, match="interrupted"):
         await phone.speak("Hi, it is Oscar.")
     line.stop()
+
+
+class OrderedEvents(Events):
+    """Events in arrival order, so a test can see an utterance land before the call ends."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.log: list[str] = []
+
+    def call_state(self, state: str, reason: str | None = None) -> None:
+        super().call_state(state, reason)
+        self.log.append(f"state:{state}")
+
+    def utterance(self, text: str, start_ms: int, end_ms: int) -> None:
+        super().utterance(text, start_ms, end_ms)
+        self.log.append(f"utterance:{text}")
+
+
+async def _hang_up_after_speech(stt, pause_frames: int = 0) -> OrderedEvents:
+    """The caller speaks, maybe pauses, and hangs up: the voicemail case."""
+    _, line = await connect()
+    phone = BluetoothPhone(line, line.protocol.dlc, None, cast(WhisperStt, stt))
+    events = OrderedEvents()
+    phone._watch_incoming = lambda: None
+    phone.attach(events)
+    line.tracker.state = CallState.ACTIVE
+    phone._on_note("answered")
+    try:
+        voiced = np.full(160, 8000, dtype=np.int16).tobytes()
+        for _ in range(40):
+            line.pump.on_packet(voiced, hci.HCI_SynchronousDataPacket.Status.CORRECTLY_RECEIVED_DATA)
+            line._downlink_audio.set()
+            await asyncio.sleep(0.01)
+        silence = bytes(160 * 2)
+        for _ in range(pause_frames):
+            line.pump.on_packet(silence, hci.HCI_SynchronousDataPacket.Status.CORRECTLY_RECEIVED_DATA)
+            line._downlink_audio.set()
+            await asyncio.sleep(0.01)
+        line.tracker.state, line.tracker.outcome = CallState.ENDED, CallOutcome.COMPLETED
+        line._on_state(CallState.ENDED)
+        await until(lambda: "state:ended" in events.log)
+        return events
+    finally:
+        phone._stop("listen")
+        line.stop()
+
+
+async def test_speech_cut_off_by_hangup_is_still_transcribed_before_the_call_ends():
+    class Stt:
+        def transcribe(self, pcm: np.ndarray) -> str:
+            return "Call me back."
+
+    events = await _hang_up_after_speech(Stt())
+    assert events.log == ["state:active", "utterance:Call me back.", "state:ended"]
+
+
+async def test_transcription_in_flight_at_hangup_lands_before_the_call_ends():
+    class SlowStt:
+        def transcribe(self, pcm: np.ndarray) -> str:
+            import time
+            time.sleep(0.5)  # whisper still working when the caller hangs up
+            return "Call me back."
+
+    events = await _hang_up_after_speech(SlowStt(), pause_frames=38)
+    assert events.log == ["state:active", "utterance:Call me back.", "state:ended"]

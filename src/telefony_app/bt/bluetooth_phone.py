@@ -32,6 +32,7 @@ from telefony_app.voice import Tts, WhisperStt
 log = logging.getLogger(__name__)
 _ATD_NOT_PLACED = {"ERROR", "NO CARRIER"}  # an immediate refusal; BUSY and NO ANSWER mean the call went out
 _UTTERANCE_MAX_S = 30.0
+_FINAL_UTTERANCE_S = 20.0  # whisper on a 30 s utterance takes a few seconds on CPU
 
 
 class BluetoothPhone(Phone):
@@ -207,13 +208,20 @@ class BluetoothPhone(Phone):
             self.events.call_state("active")
             self._start("listen", self._listen())
         elif note in ("call ended", "not answered"):
-            self._stop("listen")
             if note == "not answered":
                 reason = "remote" if self._ringing else "failed"
             else:
                 reason = "local" if self._hung_up else "remote"
+            self._start("ending", self._end_call(reason))
+
+    async def _end_call(self, reason: str) -> None:
+        """Report the end only after the last words are transcribed: a message is often cut off by the hangup."""
+        if listen := self._tasks.pop("listen", None):
+            with contextlib.suppress(TimeoutError, asyncio.CancelledError):
+                await asyncio.wait_for(listen, _FINAL_UTTERANCE_S)
+        if self.events:
             self.events.call_state("ended", reason)
-            self._watch_incoming()
+        self._watch_incoming()
 
     def _on_dtmf(self, digit: str) -> None:
         if self.events:
@@ -225,7 +233,8 @@ class BluetoothPhone(Phone):
         self.link_up = False
         self.link_down.set()
         for name in list(self._tasks):
-            self._stop(name)
+            if name != "ending":  # the end of a call still gets reported
+                self._stop(name)
         if self.events:
             self.events.link(False)
 
