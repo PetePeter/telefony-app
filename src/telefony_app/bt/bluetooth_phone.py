@@ -7,15 +7,18 @@ import wave
 from collections.abc import Callable
 from datetime import datetime
 
+import numpy as np
 from bumble import hfp, rfcomm
 from bumble.device import Connection
 
+from telefony_app.bt.audio import STT_RATE, resample
 from telefony_app.bt.call_state import CallEnded, CallState
 from telefony_app.bt.dialing import normalize_number
 from telefony_app.bt.hf_line import HfLine, LinkLost
 from telefony_app.bt.map_client import map_session
 from telefony_app.bt.obex import ObexError, ObexTimeout
 from telefony_app.bt.pbap import pull_call_log, pull_contacts
+from telefony_app.bt.rolling import RollingTranscript
 from telefony_app.phone import (
     CallLogEntry,
     CallMaybePlaced,
@@ -252,23 +255,44 @@ class BluetoothPhone(Phone):
                 self.events.ringing(number or "withheld", None)
 
     async def _listen(self) -> None:
-        """Turn the far end's speech into utterance events for as long as the call is up."""
+        """Turn the far end's speech into utterance events for as long as the call is up. While they talk,
+        the utterance is transcribed in rolling windows (partial events), so at the pause only the tail is left."""
         if self.stt is None:
             return
         started = asyncio.get_running_loop().time()
         with contextlib.suppress(LinkLost, CallEnded):
             while self.line.tracker.state is CallState.ACTIVE:
-                pcm = await self.line.listen_utterance(_UTTERANCE_MAX_S, self._on_speech_onset)
+                rolling = RollingTranscript(self.line.rate)
+                window_work: list[asyncio.Task] = []
+
+                def on_progress(heard: np.ndarray) -> None:
+                    if window_work and not window_work[-1].done():
+                        return  # one window at a time; the next catches up
+                    if (window := rolling.next_window(heard)) is not None:
+                        window_work.append(asyncio.create_task(self._transcribe_window(rolling, window)))
+
+                pcm = await self.line.listen_utterance(_UTTERANCE_MAX_S, self._on_speech_onset, on_progress)
                 if not len(pcm):
                     continue
                 if self.events:
                     self.events.speech(False)
                 began = asyncio.get_running_loop().time()
-                text = await asyncio.to_thread(self.stt.transcribe, pcm)
-                log.info("transcribed %.1f s of speech in %.2f s", len(pcm) / 16000, asyncio.get_running_loop().time() - began)
+                if window_work:
+                    for failed in await asyncio.gather(*window_work, return_exceptions=True):
+                        if isinstance(failed, Exception):
+                            log.warning("rolling transcription failed: %s", failed)
+                tail = pcm[int(rolling.covered_s * STT_RATE) :]
+                text = rolling.add(await asyncio.to_thread(self.stt.transcribe, tail)) if len(tail) else rolling.text
+                log.info("transcribed %.1f s of speech; %.2f s after the pause", len(pcm) / STT_RATE, asyncio.get_running_loop().time() - began)
                 end = int((asyncio.get_running_loop().time() - started) * 1000)
                 if text and self.events:
-                    self.events.utterance(text, max(0, end - len(pcm) * 1000 // 16000), end)
+                    self.events.utterance(text, max(0, end - len(pcm) * 1000 // STT_RATE), end)
+
+    async def _transcribe_window(self, rolling: RollingTranscript, window: np.ndarray) -> None:
+        assert self.stt is not None
+        text = await asyncio.to_thread(self.stt.transcribe, resample(window, self.line.rate, STT_RATE))
+        if text and self.events:
+            self.events.partial(rolling.add(text))
 
     # --- internals ---
 

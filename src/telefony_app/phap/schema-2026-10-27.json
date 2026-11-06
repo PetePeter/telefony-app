@@ -1702,6 +1702,17 @@
       },
       "required": ["seq", "ts", "type", "callId", "state"]
     },
+    "CallPartialEvent": {
+      "type": "object",
+      "properties": {
+        "seq": { "type": "integer", "minimum": 1 },
+        "ts": { "type": "string", "format": "date-time" },
+        "type": { "const": "call.partial" },
+        "callId": { "type": "string" },
+        "text": { "type": "string" }
+      },
+      "required": ["seq", "ts", "type", "callId", "text"]
+    },
     "SmsReceivedEvent": {
       "type": "object",
       "properties": {
@@ -1801,6 +1812,9 @@
         },
         {
           "$ref": "#/$defs/CallSpeechEvent"
+        },
+        {
+          "$ref": "#/$defs/CallPartialEvent"
         },
         {
           "$ref": "#/$defs/SmsReceivedEvent"

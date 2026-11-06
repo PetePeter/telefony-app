@@ -29,6 +29,7 @@ class Events:
     def utterance(self, text: str, start_ms: int, end_ms: int) -> None:
         self.utterances.append(text)
     def speech(self, speaking: bool) -> None: ...
+    def partial(self, text: str) -> None: ...
     def dtmf(self, digit: str) -> None: ...
     def sms_received(self, handle: str, number: str, text: str) -> None: ...
 
@@ -173,7 +174,7 @@ async def test_voiced_onset_interrupts_playback_and_still_reaches_stt():
             line._downlink_audio.set()
             await asyncio.sleep(0.01)
         silence = bytes(160 * 2)
-        for _ in range(38):  # include DTMF decoder buffering after endpoint silence
+        for _ in range(80):  # 1.5 s end silence plus DTMF decoder buffering
             line.pump.on_packet(silence, hci.HCI_SynchronousDataPacket.Status.CORRECTLY_RECEIVED_DATA)
             line._downlink_audio.set()
             await asyncio.sleep(0.01)
@@ -298,5 +299,50 @@ async def test_transcription_in_flight_at_hangup_lands_before_the_call_ends():
             time.sleep(0.5)  # whisper still working when the caller hangs up
             return "Call me back."
 
-    events = await _hang_up_after_speech(SlowStt(), pause_frames=38)
+    events = await _hang_up_after_speech(SlowStt(), pause_frames=80)
     assert events.log == ["state:active", "speaking", "paused", "utterance:Call me back.", "state:ended"]
+
+
+async def test_long_speech_streams_partials_and_ends_with_one_merged_utterance():
+    class WindowStt:
+        """Each call hears the next overlapping stretch of what the caller said."""
+
+        def __init__(self) -> None:
+            self.heard = iter(["could you call", "call the dentist", "dentist for me please"])
+
+        def transcribe(self, pcm: np.ndarray) -> str:
+            return next(self.heard, "")
+
+    class Recorder(OrderedEvents):
+        def partial(self, text: str) -> None:
+            self.log.append(f"partial:{text}")
+
+    _, line = await connect()
+    phone = BluetoothPhone(line, line.protocol.dlc, None, cast(WhisperStt, WindowStt()))
+    events = Recorder()
+    phone._watch_incoming = lambda: None
+    phone.attach(events)
+    line.tracker.state = CallState.ACTIVE
+    phone._on_note("answered")
+    try:
+        packet_s = 160 / line.rate
+        voiced = np.full(160, 8000, dtype=np.int16).tobytes()
+        for _ in range(int(5.5 / packet_s)):  # 5.5 s of speech: two rolling windows, then a tail
+            line.pump.on_packet(voiced, hci.HCI_SynchronousDataPacket.Status.CORRECTLY_RECEIVED_DATA)
+            line._downlink_audio.set()
+            await asyncio.sleep(0.002)
+        silence = bytes(160 * 2)
+        for _ in range(int(1.6 / packet_s)):
+            line.pump.on_packet(silence, hci.HCI_SynchronousDataPacket.Status.CORRECTLY_RECEIVED_DATA)
+            line._downlink_audio.set()
+            await asyncio.sleep(0.002)
+        await until(lambda: bool(events.utterances))
+
+        assert events.utterances == ["could you call the dentist for me please"]
+        assert [entry for entry in events.log if entry.startswith("partial:")] == [
+            "partial:could you call", "partial:could you call the dentist",
+        ]
+        assert events.log.index("paused") < events.log.index("utterance:could you call the dentist for me please")
+    finally:
+        phone._stop("listen")
+        line.stop()

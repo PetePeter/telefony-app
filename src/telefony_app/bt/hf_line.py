@@ -18,6 +18,8 @@ from telefony_app.bt.recording import WavRecorder
 from telefony_app.bt.segmenter import Segmenter
 from telefony_app.phone import validate_recording_id
 
+_PROGRESS_S = 0.25  # seconds of new speech between offers of a growing utterance for rolling transcription
+
 _AUDIO_GRACE_SECONDS = 5.0  # time allowed for the phone to open the SCO link
 _CALLER_ID_SECONDS = 3.0  # +CLIP follows the first RING, shortly after callsetup=1
 HUNG_UP = "telefony hung up"
@@ -268,19 +270,26 @@ class HfLine:
         self._uplink_audio.set()
 
     async def listen_utterance(
-        self, max_seconds: float, on_speech_start: Callable[[], None] | None = None
+        self,
+        max_seconds: float,
+        on_speech_start: Callable[[], None] | None = None,
+        on_progress: Callable[[np.ndarray], None] | None = None,
     ) -> np.ndarray:
         """Return the far end's first utterance as 16 kHz PCM for STT; a hangup ends it where it stands."""
         # Segment at the link rate and resample the whole utterance once: resampling each
         # tiny SCO packet separately would add a filter transient every few milliseconds.
         segmenter = Segmenter(rate=self.rate, on_speech_start=on_speech_start)
         self.pump.take_downlink()
+        reported = 0  # samples of the utterance last offered to on_progress
         try:
             async with asyncio.timeout(max_seconds):
                 while not (done := segmenter.feed(self.pump.take_downlink())):
                     if self.tracker.state is not CallState.ACTIVE:  # callers leaving a message hang up mid-sentence
                         done = segmenter.flush()
                         break
+                    if on_progress and segmenter.utterance_samples - reported >= self.rate * _PROGRESS_S:
+                        reported = segmenter.utterance_samples
+                        on_progress(segmenter.in_progress)  # at the link rate: the listener resamples only what it transcribes
                     await self._next_audio(self._downlink_audio)
         except TimeoutError:
             done = segmenter.flush()

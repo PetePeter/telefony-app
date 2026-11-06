@@ -13,7 +13,7 @@ class Segmenter:
         self,
         rate: int,
         min_speech_ms: int = 220,
-        end_silence_ms: int = 700,
+        end_silence_ms: int = 1500,  # a thinking pause stays in the turn; rolling windows keep the reply quick
         threshold: float = 500.0,
         on_speech_start: Callable[[], None] | None = None,
     ) -> None:
@@ -51,6 +51,15 @@ class Segmenter:
                     if self._silent_windows >= self._end_silence:
                         done.extend(self._close())
         return done
+
+    @property
+    def utterance_samples(self) -> int:
+        return len(self._utterance) * self._window
+
+    @property
+    def in_progress(self) -> np.ndarray:
+        """The utterance heard so far, before it has ended."""
+        return np.concatenate(self._utterance) if self._utterance else np.zeros(0, dtype=np.int16)
 
     def flush(self) -> list[np.ndarray]:
         return self._close()
