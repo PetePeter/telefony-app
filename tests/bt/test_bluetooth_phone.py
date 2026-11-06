@@ -28,6 +28,7 @@ class Events:
         self.call_states.append((state, reason))
     def utterance(self, text: str, start_ms: int, end_ms: int) -> None:
         self.utterances.append(text)
+    def speech(self, speaking: bool) -> None: ...
     def dtmf(self, digit: str) -> None: ...
     def sms_received(self, handle: str, number: str, text: str) -> None: ...
 
@@ -224,7 +225,7 @@ async def test_speech_interrupted_before_it_plays_fails_rather_than_counting_as_
 
     class Tts:
         async def synthesize(self, text: str, rate: int) -> np.ndarray:
-            phone._interrupt_speech()  # the far end starts talking while we render
+            phone._on_speech_onset()  # the far end starts talking while we render
             return np.ones(rate, dtype=np.int16)
 
     phone = BluetoothPhone(line, line.protocol.dlc, Tts(), None)
@@ -247,6 +248,9 @@ class OrderedEvents(Events):
     def utterance(self, text: str, start_ms: int, end_ms: int) -> None:
         super().utterance(text, start_ms, end_ms)
         self.log.append(f"utterance:{text}")
+
+    def speech(self, speaking: bool) -> None:
+        self.log.append("speaking" if speaking else "paused")
 
 
 async def _hang_up_after_speech(stt, pause_frames: int = 0) -> OrderedEvents:
@@ -284,7 +288,7 @@ async def test_speech_cut_off_by_hangup_is_still_transcribed_before_the_call_end
             return "Call me back."
 
     events = await _hang_up_after_speech(Stt())
-    assert events.log == ["state:active", "utterance:Call me back.", "state:ended"]
+    assert events.log == ["state:active", "speaking", "paused", "utterance:Call me back.", "state:ended"]
 
 
 async def test_transcription_in_flight_at_hangup_lands_before_the_call_ends():
@@ -295,4 +299,4 @@ async def test_transcription_in_flight_at_hangup_lands_before_the_call_ends():
             return "Call me back."
 
     events = await _hang_up_after_speech(SlowStt(), pause_frames=38)
-    assert events.log == ["state:active", "utterance:Call me back.", "state:ended"]
+    assert events.log == ["state:active", "speaking", "paused", "utterance:Call me back.", "state:ended"]

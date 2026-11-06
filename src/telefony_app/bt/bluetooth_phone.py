@@ -148,9 +148,12 @@ class BluetoothPhone(Phone):
         except (OSError, RuntimeError, CallEnded, wave.Error) as failed:
             raise PhoneError(str(failed) or type(failed).__name__) from None
 
-    def _interrupt_speech(self) -> None:
+    def _on_speech_onset(self) -> None:
+        """The far end started talking: stop our speech and say so at once, before any transcript."""
         self._speech_generation += 1
         self.line.stop_playback()
+        if self.events:
+            self.events.speech(True)
 
     async def send_dtmf(self, digits: str) -> None:
         await self._at(self.line.send_dtmf(digits))
@@ -255,10 +258,14 @@ class BluetoothPhone(Phone):
         started = asyncio.get_running_loop().time()
         with contextlib.suppress(LinkLost, CallEnded):
             while self.line.tracker.state is CallState.ACTIVE:
-                pcm = await self.line.listen_utterance(_UTTERANCE_MAX_S, self._interrupt_speech)
+                pcm = await self.line.listen_utterance(_UTTERANCE_MAX_S, self._on_speech_onset)
                 if not len(pcm):
                     continue
+                if self.events:
+                    self.events.speech(False)
+                began = asyncio.get_running_loop().time()
                 text = await asyncio.to_thread(self.stt.transcribe, pcm)
+                log.info("transcribed %.1f s of speech in %.2f s", len(pcm) / 16000, asyncio.get_running_loop().time() - began)
                 end = int((asyncio.get_running_loop().time() - started) * 1000)
                 if text and self.events:
                     self.events.utterance(text, max(0, end - len(pcm) * 1000 // 16000), end)

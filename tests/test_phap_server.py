@@ -169,6 +169,7 @@ async def test_outbound_call_lifecycle_events(connect, phone: FakePhone):
     phone.remote_answers()
     assert (await client.event("call.state"))["state"] == "active"
     phone.caller_says("hello there")
+    assert [(await client.event("call.speech"))["state"] for _ in range(2)] == ["speaking", "paused"]
     utterance = await client.event("call.utterance")
     assert (utterance["callId"], utterance["text"]) == (call_id, "hello there")
     phone.remote_hangs_up()

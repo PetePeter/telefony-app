@@ -109,6 +109,8 @@ class FakePhone(Phone):
 
     def caller_says(self, text: str) -> None:
         assert self.events
+        self.events.speech(True)
+        self.events.speech(False)
         self.events.utterance(text, 0, 1000)
 
     def caller_presses(self, digit: str) -> None:

@@ -1691,6 +1691,17 @@
         "digit"
       ]
     },
+    "CallSpeechEvent": {
+      "type": "object",
+      "properties": {
+        "seq": { "type": "integer", "minimum": 1 },
+        "ts": { "type": "string", "format": "date-time" },
+        "type": { "const": "call.speech" },
+        "callId": { "type": "string" },
+        "state": { "enum": ["speaking", "paused"] }
+      },
+      "required": ["seq", "ts", "type", "callId", "state"]
+    },
     "SmsReceivedEvent": {
       "type": "object",
       "properties": {
@@ -1787,6 +1798,9 @@
         },
         {
           "$ref": "#/$defs/CallDtmfEvent"
+        },
+        {
+          "$ref": "#/$defs/CallSpeechEvent"
         },
         {
           "$ref": "#/$defs/SmsReceivedEvent"

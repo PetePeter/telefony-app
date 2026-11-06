@@ -343,6 +343,11 @@ class PhoneService:
         call.transcript.append({"speaker": "remote", "text": text, "startMs": start_ms, "endMs": end_ms})
         self.events.emit("call.utterance", callId=call.call_id, text=text, startMs=start_ms, endMs=end_ms)
 
+    def speech(self, speaking: bool) -> None:
+        call = self._current
+        if call is not None and call.state == "active":
+            self.events.emit("call.speech", callId=call.call_id, state="speaking" if speaking else "paused")
+
     def dtmf(self, digit: str) -> None:
         call = self._current
         if call is not None and call.state == "active":
