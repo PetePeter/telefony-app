@@ -107,6 +107,10 @@ class Phone(ABC):
         """Hold the current call and dial number."""
 
     @abstractmethod
+    async def release_active(self) -> None:
+        """End the active call and take the held one back."""
+
+    @abstractmethod
     async def merge(self) -> None:
         """Join the held and active calls into one conference."""
 

@@ -48,7 +48,7 @@ METHODS: dict[str, tuple[bool, Handler]] = {
     "call.sendDtmf": _method(True, lambda s, p: s.send_dtmf(p["callId"], p["digits"])),
     "call.audio.start": _method(True, lambda s, p: _sync(s.start_live_audio(p["callId"]))),
     "call.audio.stop": _method(True, lambda s, p: _sync(s.stop_live_audio(p["callId"]))),
-    "conference.create": _method(True, lambda s, p: s.conference_create(p["callId"], p.get("number"), p.get("contact"))),
+    "conference.create": _method(True, lambda s, p: s.conference_create(p["callId"], p.get("number"), p.get("contact"), p.get("merge", "auto"))),
     "conference.join": _method(True, lambda s, p: s.conference_join(p["callId"])),
     "sms.send": _method(True, lambda s, p: s.sms_send(p["number"], p["text"])),
     "sms.list": _method(False, lambda s, p: s.sms_list(p.get("limit", 20))),

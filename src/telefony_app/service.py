@@ -55,6 +55,7 @@ class Call:
     direction: Literal["inbound", "outbound"]
     state: str
     name: str | None = None
+    consult: bool = False  # dialled while another call is held, until it joins a conference or ends
     merge_on_answer: bool = False  # a consult call: join the held call once it answers
     conference: bool = False
     transcript: list[dict] = field(default_factory=list)
@@ -192,6 +193,13 @@ class PhoneService:
         call = self._call(call_id)
         if call.state == "ringing":
             raise PhapError(INVALID_PARAMS, "invalid params", {"detail": "call is ringing; use call.reject", "state": call.state})
+        held = [c for c in self.calls.values() if c.state == "held"]
+        if call.consult and call is self._current and held:  # drop only the new party; the first call comes back
+            await self._phone(self.phone.release_active)
+            self._set_state(call, "ended", "local")
+            self._current = held[-1]
+            self._set_state(held[-1], "active")
+            return
         await self._phone(self.phone.hangup, retry=True)  # the phone drops a whole conference at once
         for each in [c for c in self.calls.values() if c is call or (call.conference and c.conference)]:
             self._set_state(each, "ended", "local")
@@ -238,10 +246,16 @@ class PhoneService:
         self._call(call_id, "active")
         await self._phone(lambda: self.phone.send_dtmf(digits))
 
-    async def conference_create(self, call_id: str, number: str | None = None, contact: str | None = None) -> str:
+    async def conference_create(
+        self, call_id: str, number: str | None = None, contact: str | None = None, merge: str = "auto"
+    ) -> str:
+        """merge "auto" joins everyone once the new party answers; "manual" leaves them talking to us alone
+        (the first call held) until conference.join, or call.hangup on the new call to drop it."""
+        if merge not in ("auto", "manual"):
+            raise PhapError(INVALID_PARAMS, "invalid params", {"detail": 'merge must be "auto" or "manual"'})
         number = await self._reachable(number, contact)
         first = self._call(call_id, "active")
-        consult = self._new_call(number, "outbound", "dialing", merge_on_answer=True)
+        consult = self._new_call(number, "outbound", "dialing", consult=True, merge_on_answer=merge == "auto")
         try:
             await self._failing(consult, lambda: self.phone.consult(number))
         except Exception:
@@ -251,9 +265,9 @@ class PhoneService:
         return consult.call_id
 
     async def conference_join(self, call_id: str) -> None:
-        held = self._call(call_id, "held")
+        self._call(call_id, "held")
         await self._phone(self.phone.merge)
-        self._set_state(held, "active", conference=True)
+        self._joined()
 
     # --- SMS and contacts ---
 
@@ -326,8 +340,8 @@ class PhoneService:
             for other in self.calls.values():
                 if other.conference and other.state != "ended":
                     self._set_state(other, "ended", reason)
-        if state == "ended" and call.merge_on_answer:  # the consulted party never joined: back to the first call
-            call.merge_on_answer = False
+        if state == "ended" and call.consult:  # the consulted party never joined: back to the first call
+            call.consult = call.merge_on_answer = False
             held = [c for c in self.calls.values() if c.state == "held"]
             if held:
                 self._current = held[-1]
@@ -385,7 +399,11 @@ class PhoneService:
             await self.phone.merge()
         except PhoneError:
             return
+        self._joined()
+
+    def _joined(self) -> None:
         for call in self.calls.values():
+            call.consult = False
             if call.state in ("held", "active"):
                 self._set_state(call, "active", conference=True, force=True)
 

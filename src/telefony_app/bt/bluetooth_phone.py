@@ -157,6 +157,10 @@ class BluetoothPhone(Phone):
             if self.events:
                 self.events.call_state("ended", "failed")
 
+    async def release_active(self) -> None:
+        self._stop("consult")
+        await self._at(self.line.protocol.execute_command("AT+CHLD=1"))
+
     async def merge(self) -> None:
         await self._at(self.line.protocol.execute_command("AT+CHLD=3"))
 

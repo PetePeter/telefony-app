@@ -58,6 +58,9 @@ class FakePhone(Phone):
         self.commands.append(("consult", number))
         self._fail("consult")
 
+    async def release_active(self) -> None:
+        self.commands.append(("release_active",))
+
     async def merge(self) -> None:
         self.commands.append(("merge",))
 

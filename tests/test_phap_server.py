@@ -672,6 +672,51 @@ async def test_refused_consult_keeps_the_first_call_active(connect, phone: FakeP
     assert (await client.request("status"))["result"]["state"]["calls"] == []
 
 
+async def _manual_conference(client, phone: FakePhone) -> tuple[str, str]:
+    first = (await client.request("call.dial", {"number": ALLOWED}))["result"]["callId"]
+    phone.remote_answers()
+    second = (await client.request("conference.create", {"callId": first, "number": ALLOWED, "merge": "manual"}))["result"]["callId"]
+    phone.remote_answers()  # the consulted party picks up
+    await asyncio.sleep(0.05)
+    return first, second
+
+
+async def test_manual_conference_talks_to_the_second_party_alone_until_joined(connect, phone: FakePhone):
+    client = await connect()
+    await client.hello()
+    first, second = await _manual_conference(client, phone)
+    assert ("merge",) not in phone.commands
+    calls = (await client.request("status"))["result"]["state"]["calls"]
+    assert {c["callId"]: c["state"] for c in calls} == {first: "held", second: "active"}
+    phone.caller_says("sure, put them through")
+    assert (await client.event("call.utterance"))["callId"] == second
+
+    await client.request("conference.join", {"callId": first})
+    assert ("merge",) in phone.commands
+    calls = (await client.request("status"))["result"]["state"]["calls"]
+    assert {c["callId"]: c["state"] for c in calls} == {first: "active", second: "active"}
+
+
+async def test_hanging_up_a_declined_consult_drops_only_it_and_resumes_the_first_call(connect, phone: FakePhone):
+    client = await connect()
+    await client.hello()
+    first, second = await _manual_conference(client, phone)
+    await client.request("call.hangup", {"callId": second})
+    assert ("release_active",) in phone.commands and ("hangup",) not in phone.commands
+    calls = (await client.request("status"))["result"]["state"]["calls"]
+    assert calls == [{"callId": first, "number": ALLOWED, "direction": "outbound", "state": "active"}]
+
+
+async def test_conference_rejects_an_unknown_merge_mode(connect, phone: FakePhone):
+    client = await connect()
+    await client.hello()
+    first = (await client.request("call.dial", {"number": ALLOWED}))["result"]["callId"]
+    phone.remote_answers()
+    reply = await client.request("conference.create", {"callId": first, "number": ALLOWED, "merge": "later"})
+    assert reply["error"]["code"] == -32602
+    assert ("consult", ALLOWED) not in phone.commands
+
+
 async def test_transcript_stays_readable_after_the_call_ends(connect, phone: FakePhone):
     client = await connect()
     await client.hello()
