@@ -697,6 +697,30 @@ async def test_manual_conference_talks_to_the_second_party_alone_until_joined(co
     assert {c["callId"]: c["state"] for c in calls} == {first: "active", second: "active"}
 
 
+async def test_speech_after_an_auto_merge_belongs_to_the_first_call(connect, phone: FakePhone):
+    # Seen live: after the merge speech carried the new leg's id and Timbre, following the first call, dropped it.
+    client = await connect()
+    await client.hello()
+    first, _ = await _conference(client, phone)
+    phone.remote_answers()
+    for _ in range(20):
+        if ("merge",) in phone.commands:
+            break
+        await asyncio.sleep(0.01)
+    await asyncio.sleep(0.01)
+    phone.caller_says("hello everyone")
+    assert (await client.event("call.utterance"))["callId"] == first
+
+
+async def test_speech_after_a_manual_join_belongs_to_the_first_call(connect, phone: FakePhone):
+    client = await connect()
+    await client.hello()
+    first, _ = await _manual_conference(client, phone)
+    await client.request("conference.join", {"callId": first})
+    phone.caller_says("hello everyone")
+    assert (await client.event("call.utterance"))["callId"] == first
+
+
 async def test_hanging_up_a_declined_consult_drops_only_it_and_resumes_the_first_call(connect, phone: FakePhone):
     client = await connect()
     await client.hello()

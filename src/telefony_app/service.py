@@ -402,6 +402,10 @@ class PhoneService:
         self._joined()
 
     def _joined(self) -> None:
+        # The conference carries on as the first call: speech, transcript and hangup stay with its id.
+        first = next((c for c in self.calls.values() if c.state in ("held", "active") and not c.consult), None)
+        if first is not None:
+            self._current = first
         for call in self.calls.values():
             call.consult = False
             if call.state in ("held", "active"):
