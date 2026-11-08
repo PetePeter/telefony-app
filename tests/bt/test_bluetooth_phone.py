@@ -391,3 +391,52 @@ async def test_a_slow_stt_still_never_gets_more_than_a_window_at_once(monkeypatc
     finally:
         phone._stop("listen")
         line.stop()
+
+
+async def test_consult_answered_while_first_call_is_held_reports_it_active():
+    # Seen live on an iPhone: the call indicator stays 1 the whole time, so only callsetup returning to 0
+    # with callheld=1 says the consulted party answered; without "active" the service never merged.
+    from tests.bt.test_hf_line import THREE_WAY_AG_CONFIGURATION
+    ag, line = await connect(THREE_WAY_AG_CONFIGURATION)
+    phone, events = BluetoothPhone(line, line.protocol.dlc, None, None), Events()
+    phone.events = events
+    phone._watch_incoming = lambda: None
+    try:
+        ag.update_ag_indicator(hfp.AgIndicator.CALL, 1)
+        await line.wait_for(CallState.ACTIVE, 1)
+        events.call_states.clear()
+        await phone.consult("0409220113")
+        ag.update_ag_indicator(hfp.AgIndicator.CALL_SETUP, 2)
+        ag.update_ag_indicator(hfp.AgIndicator.CALL_HELD, 1)
+        ag.update_ag_indicator(hfp.AgIndicator.CALL_SETUP, 3)
+        await asyncio.sleep(0.1)
+        assert events.call_states == []
+        ag.update_ag_indicator(hfp.AgIndicator.CALL_SETUP, 0)
+        await until(lambda: events.call_states == [("active", None)])
+    finally:
+        phone._stop("consult")
+        phone._stop("listen")
+        line.stop()
+
+
+async def test_consult_that_fails_reports_it_ended_and_takes_the_held_call_back():
+    from tests.bt.test_hf_line import THREE_WAY_AG_CONFIGURATION
+    ag, line = await connect(THREE_WAY_AG_CONFIGURATION)
+    phone, events = BluetoothPhone(line, line.protocol.dlc, None, None), Events()
+    phone.events = events
+    phone._watch_incoming = lambda: None
+    holds: list[int] = []
+    ag.on(ag.EVENT_CALL_HOLD, lambda operation, _index: holds.append(operation.value))
+    try:
+        ag.update_ag_indicator(hfp.AgIndicator.CALL, 1)
+        await line.wait_for(CallState.ACTIVE, 1)
+        events.call_states.clear()
+        await phone.consult("0409220113")
+        ag.update_ag_indicator(hfp.AgIndicator.CALL_HELD, 2)
+        ag.update_ag_indicator(hfp.AgIndicator.CALL_SETUP, 2)
+        ag.update_ag_indicator(hfp.AgIndicator.CALL_SETUP, 0)  # busy / declined
+        await until(lambda: events.call_states == [("ended", "failed")])
+        await until(lambda: holds == ["2", "2"] or holds == [2, 2])
+    finally:
+        phone._stop("consult")
+        line.stop()

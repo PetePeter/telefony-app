@@ -14,7 +14,7 @@ from bumble.device import Connection
 from telefony_app.bt.audio import STT_RATE, resample
 from telefony_app.bt.call_state import CallEnded, CallState
 from telefony_app.bt.dialing import normalize_number
-from telefony_app.bt.hf_line import HfLine, LinkLost
+from telefony_app.bt.hf_line import _ACTIVE_AND_HELD, HfLine, LinkLost
 from telefony_app.bt.map_client import map_session
 from telefony_app.bt.obex import ObexError, ObexTimeout
 from telefony_app.bt.pbap import pull_call_log, pull_contacts
@@ -35,6 +35,7 @@ from telefony_app.voice import Stt, Tts
 log = logging.getLogger(__name__)
 _ATD_NOT_PLACED = {"ERROR", "NO CARRIER"}  # an immediate refusal; BUSY and NO ANSWER mean the call went out
 _UTTERANCE_MAX_S = 30.0
+_CONSULT_ANSWER_S = 60.0  # a consulted party who has not answered by then is dropped
 _FINAL_UTTERANCE_S = 20.0  # whisper on a 30 s utterance takes a few seconds on CPU
 
 
@@ -134,7 +135,27 @@ class BluetoothPhone(Phone):
     async def consult(self, number: str) -> None:
         await self._at(self.line.protocol.execute_command("AT+CHLD=2"))
         self._hung_up = False
+        finished = self.line.tracker.setups_finished
         await self._at(self.line.dial, number)
+        self._start("consult", self._watch_consult(finished))
+
+    async def _watch_consult(self, finished: int) -> None:
+        """Report the consulted call answered or failed: the call indicator stays 1 throughout, so only the
+        setup finishing says which (one active and one held = answered)."""
+        tracker = self.line.tracker
+        with contextlib.suppress(CallEnded, LinkLost):
+            try:
+                await self.line._wait_until(lambda: tracker.setups_finished > finished, _CONSULT_ANSWER_S)
+            except TimeoutError:
+                await self._at(self.line.protocol.execute_command("AT+CHLD=1"))  # drop the ringing call, resume the held one
+            else:
+                if tracker.held == _ACTIVE_AND_HELD:
+                    if self.events:
+                        self.events.call_state("active")
+                    return
+                await self._at(self.line.protocol.execute_command("AT+CHLD=2"))  # take the held call back
+            if self.events:
+                self.events.call_state("ended", "failed")
 
     async def merge(self) -> None:
         await self._at(self.line.protocol.execute_command("AT+CHLD=3"))
