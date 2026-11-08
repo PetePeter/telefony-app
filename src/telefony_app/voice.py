@@ -218,6 +218,7 @@ class WhisperCppStt:
                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                     creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
                 )
+                _die_with_this_process(self._process)
             deadline = time.monotonic() + self._ready_s
             while self._process.poll() is None and time.monotonic() < deadline:
                 try:
@@ -254,6 +255,42 @@ class WhisperCppStt:
         if self._process and self._process.poll() is None:
             self._process.kill()
             self._process.wait()
+
+
+_job: int | None = None
+
+
+def _die_with_this_process(child: subprocess.Popen) -> None:
+    """Windows: put the child in a job that closes, killing it, when this process ends however it ends.
+    atexit never runs on a hard kill, and a leftover whisper-server holds the GPU memory."""
+    global _job
+    if sys.platform != "win32":
+        return
+    import ctypes
+    from ctypes import wintypes
+
+    class _Limits(ctypes.Structure):  # JOBOBJECT_EXTENDED_LIMIT_INFORMATION
+        _fields_ = [
+            ("PerProcessUserTimeLimit", ctypes.c_int64), ("PerJobUserTimeLimit", ctypes.c_int64),
+            ("LimitFlags", wintypes.DWORD), ("MinimumWorkingSetSize", ctypes.c_size_t),
+            ("MaximumWorkingSetSize", ctypes.c_size_t), ("ActiveProcessLimit", wintypes.DWORD),
+            ("Affinity", ctypes.c_size_t), ("PriorityClass", wintypes.DWORD), ("SchedulingClass", wintypes.DWORD),
+            ("IoInfo", ctypes.c_uint64 * 6), ("ProcessMemoryLimit", ctypes.c_size_t),
+            ("JobMemoryLimit", ctypes.c_size_t), ("PeakProcessMemoryUsed", ctypes.c_size_t),
+            ("PeakJobMemoryUsed", ctypes.c_size_t),
+        ]
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateJobObjectW.restype = wintypes.HANDLE
+    if _job is None:
+        job = kernel32.CreateJobObjectW(None, None)
+        limits = _Limits(LimitFlags=0x2000)  # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        if not job or not kernel32.SetInformationJobObject(wintypes.HANDLE(job), 9, ctypes.byref(limits), ctypes.sizeof(limits)):
+            log.warning("whisper-server may outlive telefony: no job object (%d)", ctypes.get_last_error())
+            return
+        _job = job  # held open for the life of this process; the OS closes it on exit
+    if not kernel32.AssignProcessToJobObject(wintypes.HANDLE(_job), wintypes.HANDLE(int(child._handle))):  # type: ignore[attr-defined]
+        log.warning("whisper-server may outlive telefony: not in the job (%d)", ctypes.get_last_error())
 
 
 def _wav16k(pcm16k: np.ndarray) -> bytes:

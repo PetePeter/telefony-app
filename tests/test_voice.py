@@ -322,3 +322,40 @@ def test_failed_gpu_stt_falls_back_to_the_cpu_engine(caplog):
     with caplog.at_level(logging.WARNING):
         assert FallbackStt(Broken(), Cpu()).transcribe(np.zeros(160, dtype=np.int16)) == "hello"
     assert "whisper-server is not answering" in caplog.text
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Job objects are Windows-only")
+def test_whisper_server_dies_with_a_hard_killed_telefony(tmp_path):
+    # Seen live: killing Timbre (and so telefony) by force left whisper-server running, holding GPU memory.
+    import subprocess
+    import time as clock
+
+    exe = fake_whisper_server(tmp_path)
+    host = tmp_path / "host.py"
+    host.write_text(
+        "import sys, time, numpy as np\n"
+        "from telefony_app.voice import WhisperCppStt\n"
+        f"stt = WhisperCppStt({exe!r}, 'ggml.bin')\n"
+        "stt.transcribe(np.zeros(1600, dtype=np.int16))\n"
+        "print('ready', flush=True)\n"
+        "time.sleep(60)\n",
+        encoding="utf-8",
+    )
+    telefony = subprocess.Popen([sys.executable, str(host)], stdout=subprocess.PIPE, text=True)
+    try:
+        assert telefony.stdout and telefony.stdout.readline().strip() == "ready"
+        args = (tmp_path / "requests.bin.args").read_text()
+        port = args.split("--port ")[1].split()[0]
+        telefony.kill()  # no atexit, no close(): only the OS can clean up
+        telefony.wait()
+        import socket
+        deadline = clock.monotonic() + 5
+        while clock.monotonic() < deadline:
+            with socket.socket() as probe:
+                if probe.connect_ex(("127.0.0.1", int(port))):
+                    return  # nothing listening: the server went with it
+            clock.sleep(0.2)
+        pytest.fail("whisper-server outlived telefony")
+    finally:
+        if telefony.poll() is None:
+            telefony.kill()
