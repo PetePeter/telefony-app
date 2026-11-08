@@ -62,6 +62,7 @@ class BluetoothPhone(Phone):
             self._bind(line, dlc)
 
     def _bind(self, line: HfLine, dlc: rfcomm.DLC) -> None:
+        first = not hasattr(self, "line")
         self.line, self.dlc = line, dlc
         self.link_up = True
         self.link_down.clear()
@@ -72,6 +73,14 @@ class BluetoothPhone(Phone):
         connection = self._connection
         connection.on(Connection.EVENT_DISCONNECTION, lambda reason: self._on_disconnect(connection))
         self._start("contacts", self._pull_contacts())  # also makes iOS offer its "Sync Contacts" switch
+        if first:  # telefony owns the phone: a call left from before it started is no one's and only costs money
+            self._start("boot", self._clear_leftover_calls())
+
+    async def _clear_leftover_calls(self) -> None:
+        try:
+            await self.line.hangup_all()
+        except (LinkLost, TimeoutError, hfp.HfpProtocolError) as failed:
+            log.warning("could not hang up calls left on the phone: %s", failed)
 
     def relink(self, line: HfLine, dlc: rfcomm.DLC) -> None:
         """Carry on over a new HFP line after the old link dropped, or bring up the first one."""

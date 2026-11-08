@@ -440,3 +440,33 @@ async def test_consult_that_fails_reports_it_ended_and_takes_the_held_call_back(
     finally:
         phone._stop("consult")
         line.stop()
+
+
+async def test_boot_hangs_up_any_call_left_on_the_phone():
+    # Seen live: a conference never reported call=0; after restarts telefony saw "call active", Timbre knew no call,
+    # and the next dial stacked on it while the old line ran up charges. Telefony owns the phone: it starts clear.
+    from tests.bt.test_hf_line import conference_call
+    ag, line = await connect()
+    ag.calls = [conference_call(1)]
+    ag.on(ag.EVENT_HANG_UP, lambda: ag.calls.clear())
+    phone = BluetoothPhone(line, line.protocol.dlc, None, None)
+    try:
+        await until(lambda: ag.calls == [])
+    finally:
+        phone._stop("boot")
+        line.stop()
+
+
+async def test_relink_keeps_a_call_that_is_still_up():
+    from tests.bt.test_hf_line import conference_call
+    _, old_line = await connect()
+    phone = BluetoothPhone(old_line, old_line.protocol.dlc, None, None)
+    phone.attach(Events())
+    ag, new_line = await connect()
+    ag.calls = [conference_call(1)]
+    hangups = []
+    ag.on(ag.EVENT_HANG_UP, lambda: hangups.append(True))
+    phone.relink(new_line, new_line.protocol.dlc)
+    await asyncio.sleep(0.3)
+    assert hangups == [] and ag.calls
+    new_line.stop()
