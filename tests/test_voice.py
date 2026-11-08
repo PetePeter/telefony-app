@@ -236,3 +236,89 @@ def test_whisper_silence_hallucinations_are_dropped_and_real_speech_kept():
     assert spoken_text([segment(" Please subscribe.")]) == ""
     assert spoken_text([segment(" Who is this?"), segment(" Mm.", no_speech_prob=0.9)]) == "Who is this?"
     assert spoken_text([segment(" Thank you."), segment(" Bye.")]) == "Thank you. Bye."
+
+
+FAKE_WHISPER_SERVER = r'''
+import json, sys
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+args = sys.argv[1:]
+port = int(args[args.index("--port") + 1])
+log = args[args.index("--log") + 1]
+with open(log + ".args", "w") as f:
+    f.write(" ".join(args))
+
+
+class Handler(BaseHTTPRequestHandler):
+    def do_POST(self):
+        body = self.rfile.read(int(self.headers["Content-Length"]))
+        with open(log, "ab") as f:
+            f.write(body)
+        segments = [{"text": " Thanks for watching!", "no_speech_prob": 0.1},
+                    {"text": " We open at nine.", "no_speech_prob": 0.1},
+                    {"text": " Mm.", "no_speech_prob": 0.9}]
+        reply = json.dumps({"text": "", "segments": segments}).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(reply)))
+        self.end_headers()
+        self.wfile.write(reply)
+
+    def log_message(self, *a):
+        pass
+
+
+HTTPServer(("127.0.0.1", port), Handler).serve_forever()
+'''
+
+
+def fake_whisper_server(tmp_path) -> str:
+    """A stand-in whisper-server executable: a .cmd wrapper around a tiny HTTP server answering /inference."""
+    (tmp_path / "server.py").write_text(FAKE_WHISPER_SERVER, encoding="utf-8")
+    exe = tmp_path / "whisper-server.cmd"
+    exe.write_text(f'@"{sys.executable}" "{tmp_path / "server.py"}" %* --log "{tmp_path / "requests.bin"}"\n', encoding="utf-8")
+    return str(exe)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="the fake server is a .cmd wrapper")
+def test_whisper_cpp_sends_a_16k_wav_and_keeps_only_spoken_text(tmp_path):
+    from telefony_app.voice import WhisperCppStt
+
+    stt = WhisperCppStt(fake_whisper_server(tmp_path), "ggml-base.en.bin")
+    try:
+        text = stt.transcribe(np.zeros(16000, dtype=np.int16))
+    finally:
+        stt.close()
+
+    assert text == "We open at nine."
+    # Without a short audio context whisper encodes 30 s for every chunk: ~1.5 s each instead of ~0.5 s.
+    assert "-ac 500" in (tmp_path / "requests.bin.args").read_text()
+    sent = (tmp_path / "requests.bin").read_bytes()
+    assert b"RIFF" in sent and b"WAVE" in sent
+    wav = sent[sent.index(b"RIFF"):]
+    assert int.from_bytes(wav[24:28], "little") == 16000  # sample rate in the WAV header
+
+
+def test_whisper_cpp_that_cannot_start_raises_so_the_fallback_can_take_over(tmp_path):
+    from telefony_app.voice import WhisperCppStt
+
+    stt = WhisperCppStt(str(tmp_path / "missing-server.exe"), "ggml-base.en.bin", ready_s=1)
+    with pytest.raises(RuntimeError):
+        stt.transcribe(np.zeros(1600, dtype=np.int16))
+    stt.close()
+
+
+def test_failed_gpu_stt_falls_back_to_the_cpu_engine(caplog):
+    from telefony_app.voice import FallbackStt
+
+    class Broken:
+        def transcribe(self, pcm16k):
+            raise RuntimeError("whisper-server is not answering")
+
+    class Cpu:
+        def transcribe(self, pcm16k):
+            return "hello"
+
+    with caplog.at_level(logging.WARNING):
+        assert FallbackStt(Broken(), Cpu()).transcribe(np.zeros(160, dtype=np.int16)) == "hello"
+    assert "whisper-server is not answering" in caplog.text

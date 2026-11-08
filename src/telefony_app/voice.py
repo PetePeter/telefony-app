@@ -1,18 +1,29 @@
-"""Speech for calls. TTS backends run as separate programs (Piper is GPL-3.0, so it is never imported); STT is faster-whisper."""
+"""Speech for calls. TTS backends run as separate programs (Piper is GPL-3.0, so it is never imported); STT is
+whisper.cpp's server (GPU via its Vulkan build) and/or faster-whisper on the CPU."""
 
 import asyncio
+import atexit
 import concurrent.futures
 import importlib.util
+import io
 import json
 import logging
 import os
 import re
 import shutil
+import socket
+import subprocess
 import sys
 import tempfile
+import threading
+import time
+import urllib.error
+import urllib.request
+import uuid
 import wave
 from pathlib import Path
 from collections.abc import Callable
+from types import SimpleNamespace
 from typing import Any, Protocol
 
 import numpy as np
@@ -159,15 +170,124 @@ def make_tts(kind: str, piper_model: str | None, sapi_voice: str | None = None) 
     return None
 
 
+class Stt(Protocol):
+    def transcribe(self, pcm16k: np.ndarray) -> str: ...
+
+
 class WhisperStt:
     def __init__(self, model: str) -> None:
         from faster_whisper import WhisperModel  # pyright: ignore[reportMissingImports]  optional dependency: pip install telefony-app[stt]
 
-        self.model = WhisperModel(model, device="cpu", compute_type="int8")
+        self.model = WhisperModel(model, device="cpu", compute_type="int8", cpu_threads=min(8, os.cpu_count() or 4))
 
     def transcribe(self, pcm16k: np.ndarray) -> str:
         segments, _ = self.model.transcribe(pcm16k.astype(np.float32) / 32768, language="en")
         return spoken_text(segments)
+
+
+# Whisper encodes 30 s (1500 frames) per call however short the audio; 500 frames covers 10 s, ~3x faster.
+# Audio past it is dropped unheard, so no chunk may be longer: BluetoothPhone sends at most a window plus its tail.
+_AUDIO_CTX = 500
+
+
+class WhisperCppStt:
+    """whisper.cpp's whisper-server, started once and kept running so the model stays loaded (on the GPU with
+    the Vulkan build); each utterance is POSTed to /inference as a 16 kHz WAV. It warms up from startup, so the
+    first call does not wait for the model to load."""
+
+    def __init__(self, server: str, model: str, ready_s: float = 60) -> None:
+        self._command, self._ready_s = [server, "-m", model, "--host", "127.0.0.1", "-l", "en", "-ac", str(_AUDIO_CTX)], ready_s
+        self._process: subprocess.Popen | None = None
+        self._port = 0
+        self._lock = threading.Lock()
+        self._closed = False
+        atexit.register(self.close)
+        self._ready = concurrent.futures.ThreadPoolExecutor(1, "whisper-cpp-start").submit(self._start)
+
+    def _start(self) -> None:
+        """Launch on a free port and wait for an answer; another program can take the port first, so retry."""
+        for _ in range(3):
+            with socket.socket() as probe:
+                probe.bind(("127.0.0.1", 0))
+                self._port = probe.getsockname()[1]
+            with self._lock:  # close() may run while this starts: never leave a server behind it
+                if self._closed:
+                    raise RuntimeError("whisper-server closed")
+                self._process = subprocess.Popen(
+                    [*self._command, "--port", str(self._port)],
+                    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                )
+            deadline = time.monotonic() + self._ready_s
+            while self._process.poll() is None and time.monotonic() < deadline:
+                try:
+                    self._post(np.zeros(1600, dtype=np.int16))
+                    return
+                except (urllib.error.URLError, ConnectionError):
+                    time.sleep(0.2)
+            self._kill()
+        raise RuntimeError("whisper-server did not start")
+
+    def _post(self, pcm16k: np.ndarray) -> dict:
+        body, boundary = _multipart(_wav16k(pcm16k))
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{self._port}/inference", body, {"Content-Type": f"multipart/form-data; boundary={boundary}"},
+        )
+        with urllib.request.urlopen(request, timeout=30) as reply:
+            return json.load(reply)
+
+    def transcribe(self, pcm16k: np.ndarray) -> str:
+        try:
+            self._ready.result()
+            result = self._post(pcm16k)
+        except (OSError, urllib.error.URLError) as failed:  # FallbackStt takes over
+            raise RuntimeError(f"whisper-server is not answering: {failed}") from None
+        segments = result.get("segments") or [{"text": result.get("text", "")}]  # plain json has no segments
+        return spoken_text(SimpleNamespace(text=s.get("text", ""), no_speech_prob=s.get("no_speech_prob", 0.0)) for s in segments)
+
+    def close(self) -> None:
+        with self._lock:
+            self._closed = True
+            self._kill()
+
+    def _kill(self) -> None:
+        if self._process and self._process.poll() is None:
+            self._process.kill()
+            self._process.wait()
+
+
+def _wav16k(pcm16k: np.ndarray) -> bytes:
+    out = io.BytesIO()
+    with wave.open(out, "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(16000)
+        wav.writeframes(pcm16k.astype(np.int16).tobytes())
+    return out.getvalue()
+
+
+def _multipart(wav: bytes) -> tuple[bytes, str]:
+    boundary = uuid.uuid4().hex
+    fields = [(b'name="response_format"', b"verbose_json"), (b'name="file"; filename="speech.wav"', wav)]
+    body = b"".join(
+        b"--" + boundary.encode() + b"\r\nContent-Disposition: form-data; " + header + b"\r\n\r\n" + value + b"\r\n"
+        for header, value in fields
+    )
+    return body + b"--" + boundary.encode() + b"--\r\n", boundary
+
+
+class FallbackStt:
+    """The GPU engine, and the CPU one when it fails, so the far end's words still arrive."""
+
+    def __init__(self, primary: Stt, backup: Stt) -> None:
+        self.primary, self.backup = primary, backup
+
+    def transcribe(self, pcm16k: np.ndarray) -> str:
+        try:
+            return self.primary.transcribe(pcm16k)
+        except (OSError, RuntimeError) as failed:
+            log.warning("%s failed (%s); using the CPU engine", type(self.primary).__name__, failed)
+            return self.backup.transcribe(pcm16k)
 
 
 # What Whisper says over silence or line noise: video outros from its training data, not the caller.
@@ -181,10 +301,15 @@ def spoken_text(segments) -> str:
     return " ".join(text for text in kept if text and not _HALLUCINATION.fullmatch(text)).strip()
 
 
-def make_stt(model: str | None) -> WhisperStt | None:
-    if not model:
-        return None
-    try:
-        return WhisperStt(model)
-    except ImportError:
-        return None
+def make_stt(model: str | None, whisper_cpp_server: str | None = None, whisper_cpp_model: str | None = None) -> Stt | None:
+    """whisper.cpp when configured, backed by faster-whisper on the CPU when that is installed and configured."""
+    cpu = None
+    if model:
+        try:
+            cpu = WhisperStt(model)
+        except ImportError:
+            pass
+    if whisper_cpp_server and whisper_cpp_model:
+        gpu = WhisperCppStt(whisper_cpp_server, whisper_cpp_model)
+        return FallbackStt(gpu, cpu) if cpu else gpu
+    return cpu

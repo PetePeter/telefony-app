@@ -55,6 +55,22 @@ VOICE_SETUP_FIELDS: tuple[dict[str, Any], ...] = (
         "restartRequired": True,
         "help": "Whisper model name or path. Use none to disable; empty retains the legacy off behavior.",
     },
+    {
+        "key": "voice.whisper_cpp_server",
+        "label": "GPU speech-to-text server (whisper.cpp)",
+        "type": "path",
+        "default": None,
+        "restartRequired": True,
+        "help": "Path to whisper.cpp's whisper-server (Vulkan build for AMD/Intel GPUs). The Whisper model above backs it up.",
+    },
+    {
+        "key": "voice.whisper_cpp_model",
+        "label": "GPU speech-to-text model (ggml)",
+        "type": "path",
+        "default": None,
+        "restartRequired": True,
+        "help": "Path to a ggml .bin model for whisper-server, e.g. ggml-large-v3-turbo-q5_0.bin.",
+    },
 )
 
 
@@ -75,6 +91,8 @@ class Config:
     sapi_voice: str | None = SAPI_VOICE_DEFAULT
     piper_model: str | None = PIPER_MODEL_DEFAULT
     stt_model: str | None = STT_MODEL_DEFAULT
+    whisper_cpp_server: str | None = None  # whisper.cpp's whisper-server (Vulkan build: GPU); the CPU model backs it up
+    whisper_cpp_model: str | None = None
     web_host: str = "127.0.0.1"
     web_port: int = 7782
     web_token: str | None = None  # no [web] admin_token: no web UI
@@ -114,6 +132,12 @@ def parse_config(raw: dict) -> Config:
     if "sapi_voice" in voice and not isinstance(voice["sapi_voice"], str):
         raise ConfigError("voice.sapi_voice must be a string")
     sapi_voice = voice.get("sapi_voice", SAPI_VOICE_DEFAULT)
+    for key in ("whisper_cpp_server", "whisper_cpp_model"):
+        if key in voice and not isinstance(voice[key], str):
+            raise ConfigError(f"voice.{key} must be a path string")
+    whisper_cpp_server, whisper_cpp_model = voice.get("whisper_cpp_server") or None, voice.get("whisper_cpp_model") or None
+    if whisper_cpp_server and not whisper_cpp_model:
+        raise ConfigError("voice.whisper_cpp_server needs voice.whisper_cpp_model (a ggml .bin file)")
     allowlist = list(policy.get("allowlist", []))
     for number in allowlist:
         try:
@@ -146,6 +170,8 @@ def parse_config(raw: dict) -> Config:
         sapi_voice=sapi_voice,
         piper_model=voice.get("piper_model", PIPER_MODEL_DEFAULT),
         stt_model=_stt_model(voice.get("stt_model", STT_MODEL_DEFAULT)),
+        whisper_cpp_server=whisper_cpp_server,
+        whisper_cpp_model=whisper_cpp_model,
         web_host=web_host,
         web_port=web_port,
         web_token=web.get("admin_token") or None,

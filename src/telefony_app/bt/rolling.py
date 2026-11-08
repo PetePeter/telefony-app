@@ -5,8 +5,10 @@ import re
 
 import numpy as np
 
+# Short windows send the far end's words on while they are still talking (a recorded message can run 30 s);
+# whisper.cpp on the GPU takes ~0.5 s a window. 3 s gives whisper enough context to hear words right (1 s did not).
 WINDOW_S = 3.0
-OVERLAP_S = 1.0
+OVERLAP_S = 0.5
 _MAX_OVERLAP_WORDS = 8
 
 
@@ -27,7 +29,8 @@ def merge_overlap(before: str, after: str) -> str:
 class RollingTranscript:
     """Which window of a growing utterance to transcribe next, and the merged text so far."""
 
-    def __init__(self, rate: int, window_s: float = WINDOW_S, overlap_s: float = OVERLAP_S) -> None:
+    def __init__(self, rate: int, window_s: float | None = None, overlap_s: float = OVERLAP_S) -> None:
+        window_s = WINDOW_S if window_s is None else window_s
         self._rate = rate
         self._window = int(rate * window_s)
         self._step = int(rate * (window_s - overlap_s))

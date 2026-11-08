@@ -161,8 +161,8 @@ def make_device_configuration(config: Config) -> DeviceConfiguration:
 
 
 async def run(config: Config, config_path: Path, mcp: bool) -> None:
-    tts, stt = make_tts(config.tts, config.piper_model, config.sapi_voice), make_stt(config.stt_model)
-    log.info("text-to-speech: %s; speech-to-text: %s", type(tts).__name__ if tts else "none", "whisper" if stt else "none")
+    tts, stt = make_tts(config.tts, config.piper_model, config.sapi_voice), make_stt(config.stt_model, config.whisper_cpp_server, config.whisper_cpp_model)
+    log.info("text-to-speech: %s; speech-to-text: %s", type(tts).__name__ if tts else "none", type(stt).__name__ if stt else "none")
     device: Device | None = None
     phone = BluetoothPhone(None, None, tts, stt)  # PhAP serves it from the start; it reports link down until linked
     async with contextlib.AsyncExitStack() as stack:

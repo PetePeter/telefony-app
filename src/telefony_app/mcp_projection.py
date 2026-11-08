@@ -110,7 +110,7 @@ def _drain(first: dict, queue: asyncio.Queue, call_id: str) -> tuple[list[str], 
     for event in [first, *_queued(queue)]:
         if event.get("callId") != call_id:
             continue
-        if event["type"] == "call.utterance":
+        if event["type"] == "call.utterance" and event["text"]:  # empty: a turn with nothing recognised
             said.append(event["text"])
         elif event["type"] == "call.dtmf":
             keys += event["digit"]

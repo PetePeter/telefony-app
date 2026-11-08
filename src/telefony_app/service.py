@@ -340,7 +340,8 @@ class PhoneService:
         call = self._current
         if call is None or call.state != "active":
             return
-        call.transcript.append({"speaker": "remote", "text": text, "startMs": start_ms, "endMs": end_ms})
+        if text:  # an empty one only marks the turn fully transcribed: nothing was said
+            call.transcript.append({"speaker": "remote", "text": text, "startMs": start_ms, "endMs": end_ms})
         self.events.emit("call.utterance", callId=call.call_id, text=text, startMs=start_ms, endMs=end_ms)
 
     def speech(self, speaking: bool) -> None:

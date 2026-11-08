@@ -21,7 +21,7 @@ def test_merge_appends_when_nothing_overlaps():
 
 
 def test_windows_are_three_seconds_stepping_by_two_and_the_tail_overlaps_the_last():
-    rolling = RollingTranscript(RATE)
+    rolling = RollingTranscript(RATE, window_s=3, overlap_s=1)
     audio = np.arange(RATE * 8, dtype=np.int64)  # sample value == its index
 
     assert rolling.next_window(audio[: RATE * 2]) is None  # not 3 s yet
@@ -35,16 +35,17 @@ def test_windows_are_three_seconds_stepping_by_two_and_the_tail_overlaps_the_las
     assert (tail[0], len(tail)) == (RATE * 4, RATE * 2)  # from the 1 s overlap to the end
 
 
-def test_a_short_utterance_is_one_whole_window():
-    rolling = RollingTranscript(RATE)
-    audio = np.arange(RATE * 2, dtype=np.int16)
-    assert rolling.next_window(audio) is None
-    assert len(rolling.tail(audio)) == len(audio)
-
-
 def test_text_builds_up_window_by_window():
-    rolling = RollingTranscript(RATE)
+    rolling = RollingTranscript(RATE, window_s=3, overlap_s=1)
     rolling.add("could you call")
     rolling.add("call the dentist")
     rolling.add("dentist for me")
     assert rolling.text == "could you call the dentist for me"
+
+
+def test_default_windows_hand_out_text_every_few_seconds():
+    # Seen live: 8 s windows let a 28 s recorded message reach the agent only after the call was given up on.
+    rolling = RollingTranscript(8000)
+    assert rolling.next_window(np.zeros(8000 * 3 - 1, dtype=np.int16)) is None
+    assert rolling.next_window(np.zeros(8000 * 3, dtype=np.int16)) is not None
+    assert rolling.next_window(np.zeros(int(8000 * 5.5), dtype=np.int16)) is not None  # the next one, 2.5 s on

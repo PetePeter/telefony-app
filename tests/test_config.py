@@ -60,6 +60,8 @@ def test_setup_field_defaults_match_parsed_config_defaults():
         "voice.piper_model": config.piper_model,
         "voice.sapi_voice": config.sapi_voice,
         "voice.stt_model": config.stt_model,
+        "voice.whisper_cpp_server": config.whisper_cpp_server,
+        "voice.whisper_cpp_model": config.whisper_cpp_model,
     }
 
     fields = describe_setup_fields()
@@ -143,3 +145,24 @@ def test_bind_host_that_is_not_an_ip_is_a_config_error(tmp_path: Path):
     text = '[device]\ntransport = "usb:0"\n[phap]\ntoken = "t"\nbind = "localhost:7781"\n'
     with pytest.raises(ConfigError, match="not an IP address"):
         load_config(write(tmp_path, text))
+
+
+def test_whisper_cpp_server_and_model_select_the_gpu_engine(tmp_path: Path):
+    from telefony_app.voice import WhisperCppStt
+
+    config = load_config(write(tmp_path, FULL + 'stt_model = "none"\nwhisper_cpp_server = "C:/w/whisper-server.exe"\nwhisper_cpp_model = "C:/w/ggml-base.en.bin"\n'))
+
+    assert (config.whisper_cpp_server, config.whisper_cpp_model) == ("C:/w/whisper-server.exe", "C:/w/ggml-base.en.bin")
+    stt = make_stt(config.stt_model, config.whisper_cpp_server, config.whisper_cpp_model)
+    assert isinstance(stt, WhisperCppStt)
+    stt.close()
+
+
+def test_whisper_cpp_server_without_a_model_is_a_config_error(tmp_path: Path):
+    with pytest.raises(ConfigError, match="whisper_cpp_model"):
+        load_config(write(tmp_path, FULL + 'whisper_cpp_server = "C:/w/whisper-server.exe"\n'))
+
+
+def test_whisper_cpp_paths_must_be_strings(tmp_path: Path):
+    with pytest.raises(ConfigError, match="whisper_cpp_server"):
+        load_config(write(tmp_path, FULL + 'whisper_cpp_server = 42\nwhisper_cpp_model = "m.bin"\n'))

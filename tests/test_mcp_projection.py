@@ -92,3 +92,15 @@ async def test_press_sends_keys_and_listen_reports_keys_pressed(mcp: McpProjecti
     phone.caller_presses("1")
     phone.caller_presses("9")
     assert await mcp.listen(timeout_s=1) == {"heard": [], "keys": "19", "callEnded": False}
+
+
+async def test_listen_skips_a_turn_with_nothing_recognised(mcp: McpProjection, phone: FakePhone):
+    # telefony ends every turn with an utterance, empty for line noise: that is not something heard.
+    await mcp.dial(ALLOWED)
+    phone.remote_answers()
+    listen = asyncio.create_task(mcp.listen(timeout_s=2))
+    await asyncio.sleep(0.05)
+    phone.caller_says("")
+    await asyncio.sleep(0.05)
+    phone.caller_says("we open at nine")
+    assert await listen == {"heard": ["we open at nine"], "keys": "", "callEnded": False}

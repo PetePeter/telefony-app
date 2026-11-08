@@ -30,7 +30,7 @@ from telefony_app.phone import (
     PhoneEvents,
     SmsMessage,
 )
-from telefony_app.voice import Tts, WhisperStt
+from telefony_app.voice import Stt, Tts
 
 log = logging.getLogger(__name__)
 _ATD_NOT_PLACED = {"ERROR", "NO CARRIER"}  # an immediate refusal; BUSY and NO ANSWER mean the call went out
@@ -43,7 +43,7 @@ class BluetoothPhone(Phone):
     line: HfLine  # bound by the first link; PhoneService checks link_up before using it
     dlc: rfcomm.DLC
 
-    def __init__(self, line: HfLine | None, dlc: rfcomm.DLC | None, tts: Tts | None, stt: WhisperStt | None) -> None:
+    def __init__(self, line: HfLine | None, dlc: rfcomm.DLC | None, tts: Tts | None, stt: Stt | None) -> None:
         """Without a line the phone starts unlinked (it was unreachable at startup); relink() brings it up."""
         self.tts, self.stt = tts, stt
         self.tts_available, self.stt_available = tts is not None, stt is not None
@@ -264,8 +264,10 @@ class BluetoothPhone(Phone):
             while self.line.tracker.state is CallState.ACTIVE:
                 rolling = RollingTranscript(self.line.rate)
                 window_work: list[asyncio.Task] = []
+                latest: list[np.ndarray] = []  # the utterance so far at the link rate, as the windows see it
 
                 def on_progress(heard: np.ndarray) -> None:
+                    latest[:] = [heard]
                     if window_work and not window_work[-1].done():
                         return  # one window at a time; the next catches up
                     if (window := rolling.next_window(heard)) is not None:
@@ -281,11 +283,18 @@ class BluetoothPhone(Phone):
                     for failed in await asyncio.gather(*window_work, return_exceptions=True):
                         if isinstance(failed, Exception):
                             log.warning("rolling transcription failed: %s", failed)
+                # Windows a slow STT could not take while they talked: every call stays one window long, as
+                # whisper.cpp hears only its audio context and would drop the rest of a long tail unheard.
+                while latest and (window := rolling.next_window(latest[0])) is not None:
+                    try:
+                        await self._transcribe_window(rolling, window)
+                    except Exception as failed:
+                        log.warning("rolling transcription failed: %s", failed)
                 tail = pcm[int(rolling.covered_s * STT_RATE) :]
                 text = rolling.add(await asyncio.to_thread(self.stt.transcribe, tail)) if len(tail) else rolling.text
                 log.info("transcribed %.1f s of speech; %.2f s after the pause", len(pcm) / STT_RATE, asyncio.get_running_loop().time() - began)
                 end = int((asyncio.get_running_loop().time() - started) * 1000)
-                if text and self.events:
+                if self.events:  # empty text too: it tells the client the turn is fully transcribed
                     self.events.utterance(text, max(0, end - len(pcm) * 1000 // STT_RATE), end)
 
     async def _transcribe_window(self, rolling: RollingTranscript, window: np.ndarray) -> None:

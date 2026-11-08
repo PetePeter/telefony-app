@@ -1,6 +1,7 @@
 """BluetoothPhone surviving a dropped link: the same object is handed a new HFP line and works again."""
 
 import asyncio
+import time
 from typing import cast
 
 import numpy as np
@@ -303,7 +304,8 @@ async def test_transcription_in_flight_at_hangup_lands_before_the_call_ends():
     assert events.log == ["state:active", "speaking", "paused", "utterance:Call me back.", "state:ended"]
 
 
-async def test_long_speech_streams_partials_and_ends_with_one_merged_utterance():
+async def test_long_speech_streams_partials_and_ends_with_one_merged_utterance(monkeypatch):
+    monkeypatch.setattr("telefony_app.bt.rolling.WINDOW_S", 3.0)  # short windows keep the test quick
     class WindowStt:
         """Each call hears the next overlapping stretch of what the caller said."""
 
@@ -343,6 +345,49 @@ async def test_long_speech_streams_partials_and_ends_with_one_merged_utterance()
             "partial:could you call", "partial:could you call the dentist",
         ]
         assert events.log.index("paused") < events.log.index("utterance:could you call the dentist for me please")
+    finally:
+        phone._stop("listen")
+        line.stop()
+
+
+async def test_a_slow_stt_still_never_gets_more_than_a_window_at_once(monkeypatch):
+    # Review: whisper.cpp hears only its audio context (10 s); a lagging STT left one long tail for the pause.
+    monkeypatch.setattr("telefony_app.bt.rolling.WINDOW_S", 3.0)
+
+    class SlowStt:
+        def __init__(self) -> None:
+            self.lengths: list[int] = []
+
+        def transcribe(self, pcm: np.ndarray) -> str:
+            self.lengths.append(len(pcm))
+            time.sleep(0.5)  # slower than the caller talks
+            return "words"
+
+    stt = SlowStt()
+    _, line = await connect()
+    phone = BluetoothPhone(line, line.protocol.dlc, None, cast(WhisperStt, stt))
+    events = OrderedEvents()
+    phone._watch_incoming = lambda: None
+    phone.attach(events)
+    line.tracker.state = CallState.ACTIVE
+    phone._on_note("answered")
+    try:
+        packet_s = 160 / line.rate
+        voiced = np.full(160, 8000, dtype=np.int16).tobytes()
+        for _ in range(int(9 / packet_s)):
+            line.pump.on_packet(voiced, hci.HCI_SynchronousDataPacket.Status.CORRECTLY_RECEIVED_DATA)
+            line._downlink_audio.set()
+            await asyncio.sleep(0.001)
+        silence = bytes(160 * 2)
+        for _ in range(int(1.6 / packet_s)):
+            line.pump.on_packet(silence, hci.HCI_SynchronousDataPacket.Status.CORRECTLY_RECEIVED_DATA)
+            line._downlink_audio.set()
+            await asyncio.sleep(0.001)
+        async with asyncio.timeout(15):
+            while not events.utterances:
+                await asyncio.sleep(0.05)
+
+        assert max(stt.lengths) <= 3 * 16000
     finally:
         phone._stop("listen")
         line.stop()
