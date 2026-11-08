@@ -80,6 +80,10 @@ class HfLine:
     async def start(self) -> None:
         """Bring up the service level connection, then handle the phone's unsolicited events."""
         await self.protocol.initiate_slc()
+        # The indicators read during setup raise no change events: a call already ringing or up when the link
+        # came back (the iPhone link drops and reconnects mid-ring) would otherwise go unseen.
+        for state in sorted(self.protocol.ag_indicators, key=lambda s: s.indicator is not hfp.AgIndicator.CALL):
+            self.tracker.on_indicator(state.indicator.value, state.current_status)
         try:
             await self.protocol.execute_command("AT+CLIP=1")  # caller ID with each RING
         except hfp.HfpProtocolError:

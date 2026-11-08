@@ -1,6 +1,7 @@
 """HfLine against Bumble's real Audio Gateway (phone side) over an in-memory Bluetooth link."""
 
 import asyncio
+import dataclasses
 import wave
 from types import SimpleNamespace
 from typing import cast
@@ -44,7 +45,8 @@ async def connect(
     channel = rfcomm.Server(devices[0]).listen(dlc_future.set_result)
     mux = await rfcomm.Client(devices.connections[1]).start()
     hf_dlc = await mux.open_dlc(channel)
-    ag = hfp.AgProtocol(await dlc_future, ag_configuration)
+    fresh = [dataclasses.replace(state) for state in ag_configuration.supported_ag_indicators]  # the AG mutates them
+    ag = hfp.AgProtocol(await dlc_future, dataclasses.replace(ag_configuration, supported_ag_indicators=fresh))
     if not clip_supported:  # seen on an iPhone: AT+CLIP=1 answered with ERROR
         ag._on_clip = lambda enabled: ag.send_error()
     slc = asyncio.get_running_loop().create_future()
@@ -543,3 +545,17 @@ async def test_phone_sees_caller_id_support_so_it_accepts_at_clip():
 
     assert ag.supports_hf_feature(hfp.HfFeature.CLI_PRESENTATION_CAPABILITY)
     line.stop()
+
+
+async def test_a_call_already_ringing_when_the_link_comes_up_is_seen_as_incoming():
+    """The iPhone link drops and reconnects mid-ring: the indicators read at setup must count, not only changes."""
+    indicators = [
+        dataclasses.replace(state, current_status=1 if state.indicator is hfp.AgIndicator.CALL_SETUP else state.current_status)
+        for state in AG_CONFIGURATION.supported_ag_indicators
+    ]
+    ag, line = await connect(dataclasses.replace(AG_CONFIGURATION, supported_ag_indicators=indicators))
+    try:
+        assert line.tracker.state is CallState.INCOMING
+        await asyncio.wait_for(line.wait_for(CallState.INCOMING, 1), 1)
+    finally:
+        line.stop()
