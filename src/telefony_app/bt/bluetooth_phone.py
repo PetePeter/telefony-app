@@ -182,6 +182,8 @@ class BluetoothPhone(Phone):
             if generation != self._speech_generation:  # the far end spoke first: nothing was heard
                 raise PhoneError("interrupted before it played")
             await self._at(self.line.play(pcm))
+            if generation != self._speech_generation:
+                raise PhoneError("interrupted during playback")
         except (OSError, RuntimeError, CallEnded, wave.Error) as failed:
             raise PhoneError(str(failed) or type(failed).__name__) from None
 

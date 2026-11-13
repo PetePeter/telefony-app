@@ -167,7 +167,8 @@ async def test_voiced_onset_interrupts_playback_and_still_reaches_stt():
             line._downlink_audio.set()
             await asyncio.sleep(0.01)
 
-        await asyncio.wait_for(speaking, 1)
+        with pytest.raises(PhoneError, match="interrupted during playback"):
+            await asyncio.wait_for(speaking, 1)
         assert line.pump.uplink_pending == 0
 
         for _ in range(12):
